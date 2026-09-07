@@ -29,11 +29,10 @@ def init_db() -> None:
     with _lock, closing(_connect()) as conn, conn:
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS quota (
+            CREATE TABLE IF NOT EXISTS quota_v2 (
                 user_id INTEGER NOT NULL,
                 quota_date TEXT NOT NULL,
-                image_used INTEGER NOT NULL DEFAULT 0,
-                gif_used INTEGER NOT NULL DEFAULT 0,
+                used INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (user_id, quota_date)
             )
             """
@@ -56,40 +55,31 @@ def today_str() -> str:
     return datetime.now(_TZ).date().isoformat()
 
 
-def try_consume_free_quota(user_id: int, kind: str) -> bool:
+def try_consume_free_quota(user_id: int) -> bool:
     """오늘 무료 횟수가 남아 있으면 소비하고 True, 없으면 False를 반환한다."""
-    assert kind in ("image", "gif")
-    limit = config.FREE_IMAGE_PER_DAY if kind == "image" else config.FREE_GIF_PER_DAY
-    column = "image_used" if kind == "image" else "gif_used"
     date = today_str()
     with _lock, closing(_connect()) as conn, conn:
-        conn.execute("INSERT OR IGNORE INTO quota (user_id, quota_date) VALUES (?, ?)", (user_id, date))
+        conn.execute("INSERT OR IGNORE INTO quota_v2 (user_id, quota_date) VALUES (?, ?)", (user_id, date))
         row = conn.execute(
-            f"SELECT {column} AS used FROM quota WHERE user_id = ? AND quota_date = ?", (user_id, date)
+            "SELECT used FROM quota_v2 WHERE user_id = ? AND quota_date = ?", (user_id, date)
         ).fetchone()
-        if row["used"] >= limit:
+        if row["used"] >= config.FREE_USES_PER_DAY:
             return False
         conn.execute(
-            f"UPDATE quota SET {column} = {column} + 1 WHERE user_id = ? AND quota_date = ?",
-            (user_id, date),
+            "UPDATE quota_v2 SET used = used + 1 WHERE user_id = ? AND quota_date = ?", (user_id, date)
         )
         return True
 
 
-def remaining_free_quota(user_id: int) -> "tuple[int, int]":
-    """(오늘 남은 이미지 무료 횟수, 오늘 남은 GIF 무료 횟수)."""
+def remaining_free_quota(user_id: int) -> int:
+    """오늘 남은 무료 횟수."""
     date = today_str()
     with _lock, closing(_connect()) as conn:
         row = conn.execute(
-            "SELECT image_used, gif_used FROM quota WHERE user_id = ? AND quota_date = ?",
-            (user_id, date),
+            "SELECT used FROM quota_v2 WHERE user_id = ? AND quota_date = ?", (user_id, date)
         ).fetchone()
-    image_used = row["image_used"] if row else 0
-    gif_used = row["gif_used"] if row else 0
-    return (
-        max(0, config.FREE_IMAGE_PER_DAY - image_used),
-        max(0, config.FREE_GIF_PER_DAY - gif_used),
-    )
+    used = row["used"] if row else 0
+    return max(0, config.FREE_USES_PER_DAY - used)
 
 
 @dataclass(frozen=True)
