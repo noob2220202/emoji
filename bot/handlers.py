@@ -47,6 +47,7 @@ def _new_job(user_id: int, first_name: str) -> str:
         "tile_count": None,
         "phrase": None,
         "font_key": None,
+        "style_key": None,
         "ts": time.time(),
     }
     return job_id
@@ -61,16 +62,22 @@ def _cleanup_job_files(job: dict) -> None:
         shutil.rmtree(tile_dir, ignore_errors=True)
 
 
+def _discard_job(job_id: str) -> None:
+    """job을 완전히 정리한다(대기 텍스트 등록, 임시 파일 포함)."""
+    job = _jobs.pop(job_id, None)
+    if job is None:
+        return
+    if _awaiting.get(job["user_id"]) == job_id:
+        _awaiting.pop(job["user_id"], None)
+    _cleanup_job_files(job)
+
+
 async def cleanup_pending(context: ContextTypes.DEFAULT_TYPE) -> None:
     """방치된 요청을 주기적으로 정리한다(임시 영상 파일 포함)."""
     now = time.time()
     stale_ids = [jid for jid, job in _jobs.items() if now - job["ts"] > _JOB_TTL_SECONDS]
     for jid in stale_ids:
-        job = _jobs.pop(jid, None)
-        if job:
-            if _awaiting.get(job["user_id"]) == jid:
-                _awaiting.pop(job["user_id"], None)
-            _cleanup_job_files(job)
+        _discard_job(jid)
 
 
 def _esc(text: str) -> str:
@@ -79,6 +86,14 @@ def _esc(text: str) -> str:
 
 def _is_admin(user_id: int) -> bool:
     return user_id in config.ADMIN_USER_IDS
+
+
+def _cancel_row(job_id: str) -> List[InlineKeyboardButton]:
+    return [InlineKeyboardButton("❌ 취소", callback_data=f"cancel:{job_id}")]
+
+
+def _with_cancel(rows: List[List[InlineKeyboardButton]], job_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(rows + [_cancel_row(job_id)])
 
 
 async def _send_status(message: Message, job: dict, text: str, reply_markup=None) -> None:
@@ -98,6 +113,23 @@ async def _update_status(context: ContextTypes.DEFAULT_TYPE, job: dict, text: st
     )
 
 
+async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    try:
+        _, job_id = query.data.split(":", 1)
+    except ValueError:
+        return
+
+    job = _jobs.get(job_id)
+    if job is None:
+        await query.edit_message_text("⌛ 이미 종료된 요청이에요.")
+        return
+
+    _discard_job(job_id)
+    await _update_status(context, job, "❌ 취소했어요. 사진을 보내거나 문구를 입력하면 다시 시작할 수 있어요.")
+
+
 # ---------------------------------------------------------------------------
 # 기본 명령어
 # ---------------------------------------------------------------------------
@@ -106,13 +138,13 @@ async def _update_status(context: ContextTypes.DEFAULT_TYPE, job: dict, text: st
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "✨ <b>이모지 팩 제작소</b>에 오신 걸 환영해요!\n\n"
-        "📸 사진을 보내거나 ✍️ <b>/text 문구</b>로 글자를 꾸며서\n"
+        "📸 사진을 보내거나 ✍️ 만들고 싶은 <b>문구를 그냥 채팅으로 입력</b>하면\n"
         "텔레그램 <b>커스텀(프리미엄) 이모지 팩</b>으로 만들어 드려요.\n"
-        "(예: <code>/text 펭구 화이팅</code>)\n\n"
+        "(예: <code>펭구 화이팅</code>)\n\n"
         "<blockquote>💡 화질을 살리려면 사진이 아니라 <b>파일(문서)</b>로 압축 없이 보내주세요.</blockquote>\n\n"
         f"💰 이모지 팩 1회 제작에 <b>{config.STAR_PRICE} ⭐</b>이 들지만, 매일 무료로도 이용하실 수 있어요.\n"
         "📦 기존에 만든 팩이 있으면 이어서 추가할 수도 있어요!\n\n"
-        "지금 바로 사진을 보내거나 /text 를 입력해보세요 🚀"
+        "지금 바로 사진을 보내거나 원하는 문구를 입력해보세요 🚀"
     )
 
 
@@ -123,21 +155,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _ask_bg_choice(message: Message, job_id: str) -> None:
     if config.OFFER_BACKGROUND_REMOVAL:
-        keyboard = InlineKeyboardMarkup(
+        rows = [
             [
-                [
-                    InlineKeyboardButton("🖼 원본 그대로", callback_data=f"bg:plain:{job_id}"),
-                    InlineKeyboardButton("✂️ 배경 제거(누끼) 후", callback_data=f"bg:nukki:{job_id}"),
-                ]
+                InlineKeyboardButton("🖼 원본 그대로", callback_data=f"bg:plain:{job_id}"),
+                InlineKeyboardButton("✂️ 배경 제거(누끼) 후", callback_data=f"bg:nukki:{job_id}"),
             ]
-        )
+        ]
         text = "🖌 <b>배경을 제거(누끼)</b>할까요?"
     else:
-        keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("▶️ 다음", callback_data=f"bg:plain:{job_id}")]]
-        )
+        rows = [[InlineKeyboardButton("▶️ 다음", callback_data=f"bg:plain:{job_id}")]]
         text = "이모지 팩을 만들까요?"
-    await _send_status(message, _jobs[job_id], text, keyboard)
+    await _send_status(message, _jobs[job_id], text, _with_cancel(rows, job_id))
 
 
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -185,7 +213,7 @@ async def on_bg_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             image_bytes = remove_background_image(image_bytes)
         except Exception as exc:  # noqa: BLE001
             logger.exception("배경 제거 실패")
-            _jobs.pop(job_id, None)
+            _discard_job(job_id)
             await _update_status(context, job, f"❌ 배경 제거에 실패했습니다: {_esc(str(exc))}")
             return
 
@@ -195,7 +223,7 @@ async def on_bg_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # ---------------------------------------------------------------------------
-# /text 글자 이모지화
+# 글자 이모지화 (문구를 그냥 채팅으로 보내면 시작됨)
 # ---------------------------------------------------------------------------
 
 
@@ -209,7 +237,7 @@ def _font_keyboard(job_id: str) -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    return InlineKeyboardMarkup(rows)
+    return _with_cancel(rows, job_id)
 
 
 def _style_keyboard(job_id: str) -> InlineKeyboardMarkup:
@@ -222,37 +250,21 @@ def _style_keyboard(job_id: str) -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    return InlineKeyboardMarkup(rows)
+    return _with_cancel(rows, job_id)
 
 
 def _anim_keyboard(job_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
+    rows = [
         [
-            [
-                InlineKeyboardButton("🖼 정지 이미지", callback_data=f"txtanim:{job_id}:static"),
-                InlineKeyboardButton("🎬 움직이는 GIF", callback_data=f"txtanim:{job_id}:gif"),
-            ]
+            InlineKeyboardButton("🖼 정지 이미지", callback_data=f"txtanim:{job_id}:static"),
+            InlineKeyboardButton("🎬 움직이는 GIF", callback_data=f"txtanim:{job_id}:gif"),
         ]
-    )
+    ]
+    return _with_cancel(rows, job_id)
 
 
 async def _ask_font_choice(message: Message, job_id: str) -> None:
     await _send_status(message, _jobs[job_id], "🎨 폰트를 선택해주세요.", _font_keyboard(job_id))
-
-
-async def text_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    job_id = _new_job(user.id, user.first_name or "사용자")
-
-    phrase = " ".join(context.args).strip() if context.args else ""
-    if phrase:
-        _jobs[job_id]["phrase"] = phrase
-        await _ask_font_choice(update.message, job_id)
-        return
-
-    _jobs[job_id]["stage"] = "await_phrase"
-    _awaiting[user.id] = job_id
-    await update.message.reply_text("✍️ 이모지로 만들 문구를 입력해주세요. (예: 펭구 화이팅)")
 
 
 async def on_font_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -265,7 +277,7 @@ async def on_font_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     job = _jobs.get(job_id)
     if job is None:
-        await query.edit_message_text("⌛ 요청이 만료됐어요. /text 로 다시 시작해주세요.")
+        await query.edit_message_text("⌛ 요청이 만료됐어요. 문구를 다시 입력해주세요.")
         return
 
     job["font_key"] = font_key
@@ -282,7 +294,7 @@ async def on_style_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     job = _jobs.get(job_id)
     if job is None:
-        await query.edit_message_text("⌛ 요청이 만료됐어요. /text 로 다시 시작해주세요.")
+        await query.edit_message_text("⌛ 요청이 만료됐어요. 문구를 다시 입력해주세요.")
         return
 
     job["style_key"] = style_key
@@ -299,7 +311,7 @@ async def on_anim_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     job = _jobs.get(job_id)
     if job is None:
-        await query.edit_message_text("⌛ 요청이 만료됐어요. /text 로 다시 시작해주세요.")
+        await query.edit_message_text("⌛ 요청이 만료됐어요. 문구를 다시 입력해주세요.")
         return
 
     phrase, font_key, style_key = job["phrase"], job["font_key"], job["style_key"]
@@ -310,7 +322,7 @@ async def on_anim_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             job["image_bytes"] = render_text_emoji(phrase, font_key, style_key)
         except Exception as exc:  # noqa: BLE001
             logger.exception("글자 이모지 렌더링 실패")
-            _jobs.pop(job_id, None)
+            _discard_job(job_id)
             await _update_status(context, job, f"❌ 이미지 생성에 실패했습니다: {_esc(str(exc))}")
             return
         job["sticker_format"] = StickerFormat.STATIC
@@ -321,7 +333,7 @@ async def on_anim_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             render_text_emoji_animated(phrase, font_key, style_key, video_path)
         except Exception as exc:  # noqa: BLE001
             logger.exception("글자 이모지 애니메이션 렌더링 실패")
-            _jobs.pop(job_id, None)
+            _discard_job(job_id)
             if os.path.exists(video_path):
                 os.remove(video_path)
             await _update_status(context, job, f"❌ 이미지 생성에 실패했습니다: {_esc(str(exc))}")
@@ -342,14 +354,14 @@ async def _ask_pack_selection(context: ContextTypes.DEFAULT_TYPE, job_id: str) -
     candidates = db.list_user_packs(job["user_id"], job["sticker_format"].value)
     job["pack_candidates"] = candidates
 
-    buttons: List[List[InlineKeyboardButton]] = [
+    rows: List[List[InlineKeyboardButton]] = [
         [InlineKeyboardButton("🆕 새 팩 만들기", callback_data=f"packsel:new:{job_id}")]
     ]
     for idx, p in enumerate(candidates):
         label = f"📦 {p.title} ({p.tile_count}/{MAX_PACK_CAPACITY})"[:64]
-        buttons.append([InlineKeyboardButton(label, callback_data=f"packsel:use:{job_id}:{idx}")])
+        rows.append([InlineKeyboardButton(label, callback_data=f"packsel:use:{job_id}:{idx}")])
 
-    await _update_status(context, job, "📦 어느 이모지 팩에 넣을까요?", InlineKeyboardMarkup(buttons))
+    await _update_status(context, job, "📦 어느 이모지 팩에 넣을까요?", _with_cancel(rows, job_id))
 
 
 async def on_pack_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -369,7 +381,9 @@ async def on_pack_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if mode == "new":
         job["stage"] = "await_pack_name"
         _awaiting[job["user_id"]] = job_id
-        await _update_status(context, job, "📝 새 팩 이름을 입력해주세요. (예: 펭구팩)")
+        await _update_status(
+            context, job, "📝 새 팩 이름을 입력해주세요. (예: 펭구팩)", _with_cancel([], job_id)
+        )
         return
 
     idx = int(parts[3])
@@ -391,40 +405,37 @@ async def _ask_tile_count(context: ContextTypes.DEFAULT_TYPE, job_id: str) -> No
         context,
         job,
         f"🔢 원하는 조각(이모지) 개수를 숫자로 입력해주세요.\n<blockquote>권장: {lo}~{hi}개</blockquote>",
+        _with_cancel([], job_id),
     )
 
 
 # ---------------------------------------------------------------------------
-# 일반 텍스트 메시지 라우팅 (팩 이름 / 조각 수 / 글자 이모지 문구 입력)
+# 일반 텍스트 메시지 라우팅
+# 대기 중인 job이 없으면 새로 보낸 문구를 글자 이모지화 시작으로 취급하고,
+# 있으면 팩 이름/조각 수 입력으로 처리한다.
 # ---------------------------------------------------------------------------
 
 
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
+    text = (update.message.text or "").strip()
+    if not text:
+        return
+
     job_id = _awaiting.get(user.id)
     if job_id is None:
+        job_id = _new_job(user.id, user.first_name or "사용자")
+        _jobs[job_id]["phrase"] = text
+        await _ask_font_choice(update.message, job_id)
         return
+
     job = _jobs.get(job_id)
     if job is None:
         _awaiting.pop(user.id, None)
         return
-
-    text = (update.message.text or "").strip()
     stage = job.get("stage")
 
-    if stage == "await_phrase":
-        if not text:
-            await update.message.reply_text("문구를 입력해주세요.")
-            return
-        _awaiting.pop(user.id, None)
-        job["phrase"] = text
-        await _ask_font_choice(update.message, job_id)
-        return
-
     if stage == "await_pack_name":
-        if not text:
-            await update.message.reply_text("팩 이름을 입력해주세요.")
-            return
         _awaiting.pop(user.id, None)
         job["target_pack"] = {"mode": "new", "title": text[:64]}
         await _ask_tile_count(context, job_id)
@@ -477,8 +488,7 @@ async def _do_split_and_continue(context: ContextTypes.DEFAULT_TYPE, job_id: str
         grid, tiles = _split_job(job)
     except Exception as exc:  # noqa: BLE001
         logger.exception("분할 실패")
-        _jobs.pop(job_id, None)
-        _cleanup_job_files(job)
+        _discard_job(job_id)
         await _update_status(context, job, f"❌ 처리 중 오류가 발생했습니다: {_esc(str(exc))}")
         return
 
@@ -486,16 +496,14 @@ async def _do_split_and_continue(context: ContextTypes.DEFAULT_TYPE, job_id: str
     if target["mode"] == "existing":
         live = await get_live_pack_state(context.bot, target["pack_name"])
         if live is None:
-            _jobs.pop(job_id, None)
-            _cleanup_job_files(job)
+            _discard_job(job_id)
             await _update_status(
                 context, job, f"❌ '{_esc(target['title'])}' 팩을 찾을 수 없어요. 다시 시도해주세요."
             )
             return
         live_fmt, live_count = live
         if live_fmt != job["sticker_format"].value or live_count + grid.total > MAX_PACK_CAPACITY:
-            _jobs.pop(job_id, None)
-            _cleanup_job_files(job)
+            _discard_job(job_id)
             await _update_status(
                 context,
                 job,
