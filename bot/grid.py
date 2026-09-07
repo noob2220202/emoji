@@ -45,6 +45,19 @@ def _grid_for_cols(width: int, height: int, cols: int) -> Grid:
     return Grid(cols=cols, rows=rows, tile_size=tile_size)
 
 
+def compute_single_row_grid(width: int, height: int) -> Grid:
+    """세로는 무조건 타일 1칸(rows=1)이 되도록 그리드를 계산한다(글자 이모지화 전용).
+
+    타일 크기를 원본 높이 그대로 쓰기 때문에 세로 방향으로는 자르거나 덧대는 부분이
+    전혀 없고, 가로로는 원본 폭 전체를 담을 수 있을 만큼만 자동으로 열이 늘어난다.
+    """
+    if width <= 0 or height <= 0:
+        raise ValueError("width와 height는 0보다 커야 합니다")
+    tile_size = height
+    cols = max(1, math.ceil(width / tile_size))
+    return Grid(cols=cols, rows=1, tile_size=tile_size)
+
+
 def compute_grid(width: int, height: int, target_tile_count: int = 12, max_tiles: int = 200) -> Grid:
     if width <= 0 or height <= 0:
         raise ValueError("width와 height는 0보다 커야 합니다")

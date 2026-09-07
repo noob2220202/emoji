@@ -12,14 +12,17 @@ from telegram.constants import StickerFormat
 from telegram.ext import ContextTypes
 
 from . import config, db
-from .background_removal import remove_background_image
+from .background_removal import remove_background_image, remove_background_video
 from .grid import Grid
-from .image_split import split_static_image
+from .image_split import split_static_image, split_static_image_single_row
 from .stickers import MAX_PACK_CAPACITY, add_tiles_to_pack, create_new_pack, get_live_pack_state
 from .text_emoji import FONTS, STYLES, render_text_emoji, render_text_emoji_animated
-from .video_split import split_animated
+from .video_split import split_animated, split_animated_single_row
 
 logger = logging.getLogger(__name__)
+
+# 문서로 보낸 파일의 mime 타입 -> 임시 저장 확장자 (영상/GIF만 대상, 정지 이미지는 별도 처리).
+_VIDEO_MIME_EXT = {"image/gif": ".gif", "video/mp4": ".mp4", "video/webm": ".webm"}
 
 # 진행 중인 요청(배경 제거 -> 팩 선택 -> 조각 수 -> 결제)을 잠깐 들고 있는 저장소.
 _jobs: Dict[str, dict] = {}
@@ -33,13 +36,14 @@ def _new_job(user_id: int, first_name: str) -> str:
     _jobs[job_id] = {
         "user_id": user_id,
         "first_name": first_name,
+        "kind": None,  # "photo" | "video" | "text" - 어느 입력으로 시작됐는지
         "chat_id": None,
         "status_message_id": None,
         "stage": None,
         "sticker_format": None,  # StickerFormat.STATIC | StickerFormat.VIDEO
         "image_bytes": None,  # 정지: PNG 바이트
-        "source_video_path": None,  # 움직이는 버전: 분할 전 원본 배너 webm 경로
-        "tile_dir": None,  # 움직이는 버전: 타일 webm들이 들어있는 임시 디렉터리
+        "source_video_path": None,  # 영상 계열: 분할 전 원본(업로드 영상 또는 글자 배너) webm/mp4/gif 경로
+        "tile_dir": None,  # 영상 계열: 타일 webm들이 들어있는 임시 디렉터리
         "grid": None,
         "tiles": None,
         "pack_candidates": [],
@@ -138,13 +142,13 @@ async def on_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "✨ <b>이모지 팩 제작소</b>에 오신 걸 환영해요!\n\n"
-        "📸 사진을 보내거나 ✍️ 만들고 싶은 <b>문구를 그냥 채팅으로 입력</b>하면\n"
+        "📸 사진이나 🎞 GIF/영상을 보내거나, ✍️ 만들고 싶은 <b>문구를 그냥 채팅으로 입력</b>하면\n"
         "텔레그램 <b>커스텀(프리미엄) 이모지 팩</b>으로 만들어 드려요.\n"
         "(예: <code>펭구 화이팅</code>)\n\n"
         "<blockquote>💡 화질을 살리려면 사진이 아니라 <b>파일(문서)</b>로 압축 없이 보내주세요.</blockquote>\n\n"
         f"💰 이모지 팩 1회 제작에 <b>{config.STAR_PRICE} ⭐</b>이 들지만, 매일 무료로도 이용하실 수 있어요.\n"
         "📦 기존에 만든 팩이 있으면 이어서 추가할 수도 있어요!\n\n"
-        "지금 바로 사진을 보내거나 원하는 문구를 입력해보세요 🚀"
+        "지금 바로 사진/GIF를 보내거나 원하는 문구를 입력해보세요 🚀"
     )
 
 
@@ -174,22 +178,60 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     file = await photo.get_file()
     data = await file.download_as_bytearray()
     job_id = _new_job(user.id, user.first_name or "사용자")
+    _jobs[job_id]["kind"] = "photo"
     _jobs[job_id]["raw_bytes"] = bytes(data)
+    await _ask_bg_choice(update.message, job_id)
+
+
+async def _start_video_job(update: Update, path: str) -> None:
+    user = update.effective_user
+    job_id = _new_job(user.id, user.first_name or "사용자")
+    job = _jobs[job_id]
+    job["kind"] = "video"
+    job["source_video_path"] = path
     await _ask_bg_choice(update.message, job_id)
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     document = update.message.document
     mime = document.mime_type or ""
-    if not mime.startswith("image/"):
-        await update.message.reply_text("🤔 이미지 파일만 지원해요. 사진으로 보내주세요.")
-        return
-    user = update.effective_user
     file = await document.get_file()
-    data = await file.download_as_bytearray()
-    job_id = _new_job(user.id, user.first_name or "사용자")
-    _jobs[job_id]["raw_bytes"] = bytes(data)
-    await _ask_bg_choice(update.message, job_id)
+
+    if mime.startswith("image/") and mime != "image/gif":
+        user = update.effective_user
+        data = await file.download_as_bytearray()
+        job_id = _new_job(user.id, user.first_name or "사용자")
+        _jobs[job_id]["kind"] = "photo"
+        _jobs[job_id]["raw_bytes"] = bytes(data)
+        await _ask_bg_choice(update.message, job_id)
+        return
+
+    if mime in _VIDEO_MIME_EXT:
+        with tempfile.NamedTemporaryFile(suffix=_VIDEO_MIME_EXT[mime], delete=False) as tmp:
+            path = tmp.name
+        await file.download_to_drive(path)
+        await _start_video_job(update, path)
+        return
+
+    await update.message.reply_text("🤔 지원하지 않는 파일 형식이에요. 이미지 또는 GIF/영상을 보내주세요.")
+
+
+async def on_animation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    animation = update.message.animation
+    file = await animation.get_file()
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        path = tmp.name
+    await file.download_to_drive(path)
+    await _start_video_job(update, path)
+
+
+async def on_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    video = update.message.video
+    file = await video.get_file()
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        path = tmp.name
+    await file.download_to_drive(path)
+    await _start_video_job(update, path)
 
 
 async def on_bg_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -206,8 +248,29 @@ async def on_bg_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await query.edit_message_text("⌛ 요청이 만료됐어요. 사진을 다시 보내주세요.")
         return
 
+    remove_bg = mode == "nukki"
+
+    if job["kind"] == "video":
+        if remove_bg:
+            await _update_status(context, job, "✂️ 배경을 제거하는 중... (프레임이 많으면 시간이 걸려요)")
+            raw_path = job["source_video_path"]
+            nukki_path = raw_path + ".nukki.webm"
+            try:
+                remove_background_video(raw_path, nukki_path, config.ANIM_TILE_MAX_DURATION)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("영상 배경 제거 실패")
+                _discard_job(job_id)
+                await _update_status(context, job, f"❌ 배경 제거에 실패했습니다: {_esc(str(exc))}")
+                return
+            if os.path.exists(raw_path):
+                os.remove(raw_path)
+            job["source_video_path"] = nukki_path
+        job["sticker_format"] = StickerFormat.VIDEO
+        await _ask_pack_selection(context, job_id)
+        return
+
     image_bytes = job.pop("raw_bytes", None)
-    if mode == "nukki":
+    if remove_bg:
         await _update_status(context, job, "✂️ 배경을 제거하는 중...")
         try:
             image_bytes = remove_background_image(image_bytes)
@@ -316,31 +379,52 @@ async def on_anim_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     phrase, font_key, style_key = job["phrase"], job["font_key"], job["style_key"]
 
+    # 글자 이모지화는 세로를 항상 이모지 한 칸(1행)으로 고정한다 - 가로는 문구 길이에
+    # 맞춰 자동으로 늘어나므로, 사진과 달리 "조각 개수"를 따로 물어볼 필요가 없다.
     if mode == "static":
         await _update_status(context, job, "🖌 이미지를 만드는 중...")
         try:
             job["image_bytes"] = render_text_emoji(phrase, font_key, style_key)
+            grid, tiles_matrix = split_static_image_single_row(job["image_bytes"])
         except Exception as exc:  # noqa: BLE001
-            logger.exception("글자 이모지 렌더링 실패")
+            logger.exception("글자 이모지 생성 실패")
             _discard_job(job_id)
             await _update_status(context, job, f"❌ 이미지 생성에 실패했습니다: {_esc(str(exc))}")
             return
         job["sticker_format"] = StickerFormat.STATIC
+        tiles = [t for row in tiles_matrix for t in row]
     else:
         await _update_status(context, job, "🎬 움직이는 이미지를 만드는 중... (시간이 좀 걸려요)")
         video_path = os.path.join(tempfile.gettempdir(), f"text_emoji_{job_id}.webm")
+        job["source_video_path"] = video_path
         try:
             render_text_emoji_animated(phrase, font_key, style_key, video_path)
+            out_dir = tempfile.mkdtemp(prefix="emoji_tiles_")
+            job["tile_dir"] = out_dir
+            grid, tile_paths = split_animated_single_row(
+                video_path, out_dir, config.ANIM_TILE_MAX_DURATION, config.ANIM_TILE_MAX_BYTES
+            )
         except Exception as exc:  # noqa: BLE001
-            logger.exception("글자 이모지 애니메이션 렌더링 실패")
+            logger.exception("글자 이모지 애니메이션 생성 실패")
             _discard_job(job_id)
-            if os.path.exists(video_path):
-                os.remove(video_path)
             await _update_status(context, job, f"❌ 이미지 생성에 실패했습니다: {_esc(str(exc))}")
             return
-        job["source_video_path"] = video_path
         job["sticker_format"] = StickerFormat.VIDEO
+        tiles = [p for row in tile_paths for p in row]
 
+    if grid.total > config.MAX_TILES:
+        _discard_job(job_id)
+        await _update_status(
+            context,
+            job,
+            f"❌ 문구가 너무 길어서 이모지 팩 최대 개수({config.MAX_TILES}개)를 초과해요. "
+            "문구를 줄여서 다시 시도해주세요.",
+        )
+        return
+
+    job["grid"] = grid
+    job["tiles"] = tiles
+    await _update_status(context, job, f"✅ <b>{grid.cols}x1</b> ({grid.total}개)로 만들어졌어요!")
     await _ask_pack_selection(context, job_id)
 
 
@@ -393,7 +477,21 @@ async def on_pack_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     candidate = candidates[idx]
     job["target_pack"] = {"mode": "existing", "pack_name": candidate.pack_name, "title": candidate.title}
-    await _ask_tile_count(context, job_id)
+    await _after_target_chosen(context, job_id)
+
+
+async def _after_target_chosen(context: ContextTypes.DEFAULT_TYPE, job_id: str) -> None:
+    """팩 대상(새 팩/기존 팩)이 정해진 뒤 다음 단계로 이어간다.
+
+    사진은 이 시점에 아직 분할 전이라 조각 수를 물어봐야 하고, 글자 이모지화는 팩
+    선택 전에 이미 분할이 끝나있으므로(세로 1칸 고정이라 물어볼 필요가 없다) 곧바로
+    기존 팩 용량 확인/결제 단계로 넘어간다.
+    """
+    job = _jobs[job_id]
+    if job["grid"] is not None:
+        await _finish_target_check_and_proceed(context, job_id)
+    else:
+        await _ask_tile_count(context, job_id)
 
 
 async def _ask_tile_count(context: ContextTypes.DEFAULT_TYPE, job_id: str) -> None:
@@ -425,6 +523,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     job_id = _awaiting.get(user.id)
     if job_id is None:
         job_id = _new_job(user.id, user.first_name or "사용자")
+        _jobs[job_id]["kind"] = "text"
         _jobs[job_id]["phrase"] = text
         await _ask_font_choice(update.message, job_id)
         return
@@ -438,7 +537,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if stage == "await_pack_name":
         _awaiting.pop(user.id, None)
         job["target_pack"] = {"mode": "new", "title": text[:64]}
-        await _ask_tile_count(context, job_id)
+        await _after_target_chosen(context, job_id)
         return
 
     if stage == "await_tile_count":
@@ -461,59 +560,46 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ---------------------------------------------------------------------------
 
 
-def _split_job(job: dict):
-    """job의 소스(정지 이미지 또는 움직이는 배너)를 실제로 타일로 쪼갠다."""
-    if job["sticker_format"] == StickerFormat.VIDEO:
+async def _do_split_and_continue(context: ContextTypes.DEFAULT_TYPE, job_id: str) -> None:
+    """사진/업로드 영상 job 전용: 사용자가 입력한 조각 수로 실제 분할을 수행한다(2D 그리드
+    근사 방식 - 글자 이모지화는 세로 1칸 고정이라 on_anim_choice에서 이미 분할까지 끝내고
+    이 함수를 거치지 않는다)."""
+    job = _jobs[job_id]
+
+    if job["kind"] == "video":
+        await _update_status(context, job, "🔍 영상을 분석하고 이모지로 쪼개는 중... (시간이 좀 걸릴 수 있어요)")
         out_dir = tempfile.mkdtemp(prefix="emoji_tiles_")
         job["tile_dir"] = out_dir
-        grid, tile_paths = split_animated(
-            job["source_video_path"],
-            out_dir,
-            job["tile_count"],
-            config.MAX_TILES,
-            config.ANIM_TILE_MAX_DURATION,
-            config.ANIM_TILE_MAX_BYTES,
-        )
-        tiles = [p for row in tile_paths for p in row]
+        try:
+            grid, tile_paths = split_animated(
+                job["source_video_path"],
+                out_dir,
+                job["tile_count"],
+                config.MAX_TILES,
+                config.ANIM_TILE_MAX_DURATION,
+                config.ANIM_TILE_MAX_BYTES,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("영상 분할 실패")
+            _discard_job(job_id)
+            await _update_status(context, job, f"❌ 영상 처리 중 오류가 발생했습니다: {_esc(str(exc))}")
+            return
+        if os.path.exists(job["source_video_path"]):
+            os.remove(job["source_video_path"])
+            job["source_video_path"] = None
+        job["grid"] = grid
+        job["tiles"] = [p for row in tile_paths for p in row]
     else:
-        grid, tiles_matrix = split_static_image(job["image_bytes"], job["tile_count"], config.MAX_TILES)
-        tiles = [t for row in tiles_matrix for t in row]
-    return grid, tiles
-
-
-async def _do_split_and_continue(context: ContextTypes.DEFAULT_TYPE, job_id: str) -> None:
-    job = _jobs[job_id]
-    await _update_status(context, job, "🔍 분석하고 이모지로 쪼개는 중...")
-    try:
-        grid, tiles = _split_job(job)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("분할 실패")
-        _discard_job(job_id)
-        await _update_status(context, job, f"❌ 처리 중 오류가 발생했습니다: {_esc(str(exc))}")
-        return
-
-    target = job["target_pack"]
-    if target["mode"] == "existing":
-        live = await get_live_pack_state(context.bot, target["pack_name"])
-        if live is None:
+        await _update_status(context, job, "🔍 분석하고 이모지로 쪼개는 중...")
+        try:
+            grid, tiles_matrix = split_static_image(job["image_bytes"], job["tile_count"], config.MAX_TILES)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("분할 실패")
             _discard_job(job_id)
-            await _update_status(
-                context, job, f"❌ '{_esc(target['title'])}' 팩을 찾을 수 없어요. 다시 시도해주세요."
-            )
+            await _update_status(context, job, f"❌ 처리 중 오류가 발생했습니다: {_esc(str(exc))}")
             return
-        live_fmt, live_count = live
-        if live_fmt != job["sticker_format"].value or live_count + grid.total > MAX_PACK_CAPACITY:
-            _discard_job(job_id)
-            await _update_status(
-                context,
-                job,
-                f"❌ '{_esc(target['title'])}' 팩에는 더 넣을 수 없어요(용량 초과).\n"
-                "조각 수를 줄이거나 다른 팩으로 다시 시도해주세요.",
-            )
-            return
-
-    job["grid"] = grid
-    job["tiles"] = tiles
+        job["grid"] = grid
+        job["tiles"] = [t for row in tiles_matrix for t in row]
 
     # 요청한 조각 수는 정사각형 타일 제약 때문에 정확히 맞지 않고 종횡비에 맞는 가장
     # 가까운 값으로 근사될 수 있으므로, 결제/무료 처리 전에 실제 결과를 보여준다.
@@ -524,6 +610,32 @@ async def _do_split_and_continue(context: ContextTypes.DEFAULT_TYPE, job_id: str
             f"✅ 요청하신 {job['tile_count']}개와 가장 비슷한 "
             f"<b>{grid.cols}x{grid.rows}</b> ({grid.total}개)로 분할했어요!",
         )
+
+    await _finish_target_check_and_proceed(context, job_id)
+
+
+async def _finish_target_check_and_proceed(context: ContextTypes.DEFAULT_TYPE, job_id: str) -> None:
+    """분할이 끝난 뒤 공통으로 거치는 단계: 기존 팩을 골랐다면 텔레그램 서버 기준
+    실시간 용량/포맷을 다시 확인하고, 문제가 없으면 무료/결제 처리로 넘어간다."""
+    job = _jobs[job_id]
+    target = job["target_pack"]
+    if target["mode"] == "existing":
+        live = await get_live_pack_state(context.bot, target["pack_name"])
+        if live is None:
+            _discard_job(job_id)
+            await _update_status(
+                context, job, f"❌ '{_esc(target['title'])}' 팩을 찾을 수 없어요. 다시 시도해주세요."
+            )
+            return
+        live_fmt, live_count = live
+        if live_fmt != job["sticker_format"].value or live_count + job["grid"].total > MAX_PACK_CAPACITY:
+            _discard_job(job_id)
+            await _update_status(
+                context,
+                job,
+                f"❌ '{_esc(target['title'])}' 팩에는 더 넣을 수 없어요(용량 초과). 다른 팩으로 다시 시도해주세요.",
+            )
+            return
 
     await _check_quota_and_proceed(context, job_id)
 

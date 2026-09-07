@@ -47,7 +47,8 @@ ADMIN_USER_IDS = {
 # 글자 이모지화 기능에서 쓸 폰트 파일이 들어있는 디렉터리.
 FONT_DIR = os.getenv("FONT_DIR", os.path.join(os.path.dirname(__file__), "..", "assets", "fonts"))
 
-# 글자 이모지화(움직이는 버전) 타일 하나의 최대 길이(초)/용량(바이트). 텔레그램 영상
-# 커스텀 이모지 규격상 3초, 256KB 이하여야 한다.
+# 영상 이모지(글자 이모지화의 움직이는 버전, 그리고 사용자가 직접 올린 GIF/영상) 타일
+# 하나의 최대 길이(초)/용량(바이트). 텔레그램 영상 커스텀 이모지 규격상 3초, 256KB
+# 이하여야 한다.
 ANIM_TILE_MAX_DURATION = float(os.getenv("ANIM_TILE_MAX_DURATION", "3"))
 ANIM_TILE_MAX_BYTES = int(os.getenv("ANIM_TILE_MAX_BYTES", str(256 * 1024)))

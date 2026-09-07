@@ -1,4 +1,4 @@
-from bot.grid import compute_grid
+from bot.grid import compute_grid, compute_single_row_grid
 
 
 def test_square_image_hits_target_count_exactly_when_it_divides_evenly():
@@ -55,3 +55,30 @@ def test_padded_dimensions_never_smaller_than_original():
         grid = compute_grid(width, height, target_tile_count=12, max_tiles=200)
         assert grid.padded_width >= width
         assert grid.padded_height >= height
+
+
+def test_single_row_grid_always_has_exactly_one_row():
+    for width, height in [(1265, 378), (100, 100), (5000, 300), (60, 400), (1, 1)]:
+        grid = compute_single_row_grid(width, height)
+        assert grid.rows == 1
+        assert grid.tile_size == height
+        assert grid.padded_width >= width
+        assert grid.padded_height == height  # 세로는 원본과 정확히 같아야 한다(잘림/여백 없음)
+
+
+def test_single_row_grid_column_count_matches_width_ratio():
+    # tile_size == height 이므로 cols는 ceil(width/height)여야 한다.
+    grid = compute_single_row_grid(1000, 100)
+    assert grid.cols == 10
+
+    grid = compute_single_row_grid(1001, 100)
+    assert grid.cols == 11  # 딱 안 나눠떨어지면 한 칸 더 늘어나 전체를 담는다
+
+
+def test_single_row_grid_rejects_non_positive_dimensions():
+    import pytest
+
+    with pytest.raises(ValueError):
+        compute_single_row_grid(0, 100)
+    with pytest.raises(ValueError):
+        compute_single_row_grid(100, 0)

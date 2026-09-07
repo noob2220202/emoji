@@ -87,3 +87,25 @@ def test_animated_banner_splits_into_small_tiles(tmp_path):
 
         assert os.path.getsize(p) > 0
         assert os.path.getsize(p) <= 256 * 1024
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg가 없어서 분할 테스트를 건너뜀")
+def test_animated_banner_single_row_split_has_exactly_one_row(tmp_path):
+    import os
+
+    from bot.video_split import split_animated_single_row
+
+    out_path = str(tmp_path / "anim.webm")
+    render_text_emoji_animated("펭구 화이팅", "black_han_sans", "silver", out_path)
+
+    tile_dir = tmp_path / "tiles"
+    tile_dir.mkdir()
+    grid, tile_paths = split_animated_single_row(out_path, str(tile_dir))
+
+    assert grid.rows == 1
+    assert len(tile_paths) == 1
+    flat = tile_paths[0]
+    assert len(flat) == grid.cols
+    for p in flat:
+        assert os.path.getsize(p) > 0
+        assert os.path.getsize(p) <= 256 * 1024

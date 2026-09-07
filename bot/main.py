@@ -54,6 +54,8 @@ def main() -> None:
     app.add_handler(CommandHandler("start", handlers.start))
     app.add_handler(MessageHandler(filters.PHOTO, handlers.on_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handlers.on_document))
+    app.add_handler(MessageHandler(filters.ANIMATION, handlers.on_animation))
+    app.add_handler(MessageHandler(filters.VIDEO, handlers.on_video))
     app.add_handler(CallbackQueryHandler(handlers.on_bg_choice, pattern=r"^bg:"))
     app.add_handler(CallbackQueryHandler(handlers.on_pack_select, pattern=r"^packsel:"))
     app.add_handler(CallbackQueryHandler(handlers.on_font_choice, pattern=r"^txtfont:"))

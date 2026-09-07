@@ -2,7 +2,7 @@ from io import BytesIO
 
 from PIL import Image
 
-from bot.image_split import EMOJI_SIZE, split_static_image
+from bot.image_split import EMOJI_SIZE, split_static_image, split_static_image_single_row
 
 
 def _make_png(width: int, height: int) -> bytes:
@@ -45,3 +45,23 @@ def test_low_target_count_yields_a_compact_pack():
     data = _make_png(1200, 1200)
     grid, _tiles = split_static_image(data, target_tile_count=10, max_tiles=200)
     assert grid.total <= 16  # 10개 근처의 작은 결과물이어야 한다(예: 3x3, 3x4 등)
+
+
+def test_single_row_split_always_produces_one_row_of_tiles():
+    # 가로로 긴 배너(글자 이모지화 결과물과 비슷한 형태)를 세로 1칸 고정으로 나눈다.
+    data = _make_png(1265, 253)
+    grid, tiles = split_static_image_single_row(data)
+    assert grid.rows == 1
+    assert len(tiles) == 1
+    assert len(tiles[0]) == grid.cols
+    for tile_bytes in tiles[0]:
+        im = Image.open(BytesIO(tile_bytes))
+        assert im.size == (EMOJI_SIZE, EMOJI_SIZE)
+
+
+def test_single_row_split_covers_full_width_without_cropping():
+    data = _make_png(333, 100)
+    grid, tiles = split_static_image_single_row(data)
+    assert grid.padded_width >= 333
+    assert grid.padded_height == 100
+    assert len(tiles[0]) == grid.cols

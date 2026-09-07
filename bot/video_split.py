@@ -13,7 +13,7 @@ from typing import List, Tuple
 import cv2
 
 from .ffmpeg_util import ffmpeg_path
-from .grid import Grid, compute_grid
+from .grid import Grid, compute_grid, compute_single_row_grid
 
 EMOJI_SIZE = 100
 # 파일 크기가 목표치를 넘으면 CRF(품질)를 낮춰가며 재인코딩을 시도한다.
@@ -47,6 +47,32 @@ def split_animated(
 ) -> Tuple[Grid, List[List[str]]]:
     width, height, _fps, duration = probe_video(input_path)
     grid = compute_grid(width, height, target_tile_count, max_tiles)
+    tiles = _slice_video(input_path, out_dir, grid, duration, max_duration, max_bytes)
+    return grid, tiles
+
+
+def split_animated_single_row(
+    input_path: str,
+    out_dir: str,
+    max_duration: float = 3.0,
+    max_bytes: int = 256 * 1024,
+) -> Tuple[Grid, List[List[str]]]:
+    """세로 1칸(rows=1) 고정으로, 가로는 원본 폭에 맞춰 자동으로 나눈다
+    (글자 이모지화 전용 - 항상 한 줄짜리 움직이는 배너 형태로 나온다)."""
+    width, height, _fps, duration = probe_video(input_path)
+    grid = compute_single_row_grid(width, height)
+    tiles = _slice_video(input_path, out_dir, grid, duration, max_duration, max_bytes)
+    return grid, tiles
+
+
+def _slice_video(
+    input_path: str,
+    out_dir: str,
+    grid: Grid,
+    duration: float,
+    max_duration: float,
+    max_bytes: int,
+) -> List[List[str]]:
     clip_duration = min(duration, max_duration) if duration > 0 else max_duration
 
     ffmpeg = ffmpeg_path()
@@ -70,7 +96,7 @@ def split_animated(
             _encode_with_size_limit(ffmpeg, input_path, vf, clip_duration, out_path, max_bytes)
             row.append(out_path)
         tile_paths.append(row)
-    return grid, tile_paths
+    return tile_paths
 
 
 def _encode_with_size_limit(
