@@ -221,7 +221,7 @@ async def on_bg_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         await status_msg.edit_text("🔍 이미지를 분석하고 이모지로 쪼개는 중...")
         try:
-            grid, tiles = split_static_image(image_bytes, config.TARGET_TILE_PX, config.MAX_TILES)
+            grid, tiles = split_static_image(image_bytes, config.TARGET_TILE_COUNT, config.MAX_TILES)
         except Exception as exc:  # noqa: BLE001
             logger.exception("이미지 분할 실패")
             _jobs.pop(job_id, None)
@@ -258,7 +258,7 @@ async def on_bg_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         grid, tile_paths = split_animated(
             source_path,
             out_dir,
-            config.TARGET_TILE_PX,
+            config.TARGET_TILE_COUNT,
             config.MAX_TILES,
             config.MAX_VIDEO_DURATION,
             config.MAX_VIDEO_BYTES,

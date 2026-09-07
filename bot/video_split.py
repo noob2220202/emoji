@@ -38,13 +38,13 @@ def probe_video(path: str) -> Tuple[int, int, float, float]:
 def split_animated(
     input_path: str,
     out_dir: str,
-    target_tile_px: int = 120,
-    max_tiles: int = 100,
+    target_tile_count: int = 12,
+    max_tiles: int = 200,
     max_duration: float = 3.0,
     max_bytes: int = 256 * 1024,
 ) -> Tuple[Grid, List[List[str]]]:
     width, height, _fps, duration = probe_video(input_path)
-    grid = compute_grid(width, height, target_tile_px, max_tiles)
+    grid = compute_grid(width, height, target_tile_count, max_tiles)
     clip_duration = min(duration, max_duration) if duration > 0 else max_duration
 
     ffmpeg = ffmpeg_path()

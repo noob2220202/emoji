@@ -11,7 +11,7 @@ EMOJI_SIZE = 100
 
 
 def split_static_image(
-    data: bytes, target_tile_px: int = 120, max_tiles: int = 100
+    data: bytes, target_tile_count: int = 12, max_tiles: int = 200
 ) -> Tuple[Grid, List[List[bytes]]]:
     """이미지 바이트를 받아 (Grid, 행렬 형태의 PNG 바이트 리스트)를 반환한다.
 
@@ -22,7 +22,7 @@ def split_static_image(
     im = im.convert("RGBA")
     width, height = im.size
 
-    grid = compute_grid(width, height, target_tile_px, max_tiles)
+    grid = compute_grid(width, height, target_tile_count, max_tiles)
 
     # 원본이 grid.padded_width/height 보다 작을 수 있으므로 투명 배경 캔버스에
     # 왼쪽 위 기준으로 붙여서 정확히 나누어떨어지게 만든다.

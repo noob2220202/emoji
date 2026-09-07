@@ -2,13 +2,15 @@
 
 핵심 아이디어:
 - 텔레그램 커스텀 이모지는 반드시 100x100 정사각형이어야 한다.
-- 원본을 일정한 크기(target_tile_px)의 정사각형 타일로 나눈 뒤, 각 타일을
-  100x100으로 리사이즈해서 하나의 이모지로 만든다.
-- 열 개수는 "원본 가로 길이 / 목표 타일 픽셀"로, 타일 실제 크기는 그 열 개수로
-  가로를 정확히 나눈 값으로 정하고, 행 개수는 그 타일 크기로 세로를 나눠서 정한다.
-  이렇게 하면 타일이 항상 정사각형이 되어 리사이즈해도 원본 비율이 왜곡되지 않는다.
-- 타일 개수가 max_tiles를 넘으면 목표 타일 픽셀을 키워가며(=타일 개수를 줄여가며)
-  다시 계산한다.
+- 사용자가 이해하기 쉬운 기준은 "픽셀 크기"가 아니라 "총 몇 조각으로 나뉘는지"이므로,
+  목표 조각 개수(target_tile_count)와 원본 가로세로 비율로부터 열/행 개수를 역산한다.
+  (조각이 너무 많으면 다 이어붙였을 때 메시지 자체가 커지고, 너무 적으면 각 조각이
+  뭉텅뭉텅 커 보이므로 이 개수가 실질적인 "결과물 크기" 조절 다이얼이다.)
+- 열 개수를 정한 뒤, 그 열 개수로 가로를 정확히 나눈 값을 타일 크기로 삼고 그 타일
+  크기로 세로를 나눠서 행 개수를 정한다. 이렇게 하면 타일이 항상 정사각형이 되어
+  100x100으로 리사이즈해도 원본 비율이 왜곡되지 않는다.
+- 그 결과 개수가 max_tiles(텔레그램 한도에 맞춘 안전장치)를 넘으면 목표 개수를
+  줄여가며 다시 계산한다.
 """
 
 import math
@@ -34,21 +36,34 @@ class Grid:
         return self.tile_size * self.rows
 
 
-def compute_grid(width: int, height: int, target_tile_px: int = 120, max_tiles: int = 100) -> Grid:
+def _grid_for_cols(width: int, height: int, cols: int) -> Grid:
+    cols = max(1, cols)
+    # ceil을 써야 tile_size*cols/rows(패딩된 캔버스 크기)가 항상 원본 크기 이상이
+    # 되어 원본이 잘려나가지 않는다(round는 잘림이 생길 수 있음).
+    tile_size = max(1, math.ceil(width / cols))
+    rows = max(1, math.ceil(height / tile_size))
+    return Grid(cols=cols, rows=rows, tile_size=tile_size)
+
+
+def compute_grid(width: int, height: int, target_tile_count: int = 12, max_tiles: int = 200) -> Grid:
     if width <= 0 or height <= 0:
         raise ValueError("width와 height는 0보다 커야 합니다")
-    if target_tile_px <= 0:
-        raise ValueError("target_tile_px는 0보다 커야 합니다")
+    if target_tile_count <= 0:
+        raise ValueError("target_tile_count는 0보다 커야 합니다")
     if max_tiles <= 0:
         raise ValueError("max_tiles는 0보다 커야 합니다")
 
+    aspect = width / height
+    initial_cols = max(1, round(math.sqrt(target_tile_count * aspect)))
+
     scale = 1.0
     while True:
-        cols = max(1, round(width / (target_tile_px * scale)))
-        # ceil을 써야 tile_size*cols/rows(패딩된 캔버스 크기)가 항상 원본 크기 이상이
-        # 되어 원본이 잘려나가지 않는다(round는 잘림이 생길 수 있음).
-        tile_size = max(1, math.ceil(width / cols))
-        rows = max(1, math.ceil(height / tile_size))
-        if cols * rows <= max_tiles or (cols == 1 and rows == 1):
-            return Grid(cols=cols, rows=rows, tile_size=tile_size)
+        cols = max(1, round(initial_cols / scale))
+        grid = _grid_for_cols(width, height, cols)
+        # cols가 커질수록(가로) 또는 tile_size가 커질수록(세로, rows) total은 단조
+        # 감소하다가 cols=1에서 바닥을 찍는다. cols=1인데도 max_tiles를 넘으면
+        # (예: 극단적으로 길쭉한 이미지) 더 줄일 방법이 없으므로 그대로 반환한다 -
+        # 무한 루프를 방지하고, 초과 여부는 호출하는 쪽에서 확인한다.
+        if grid.total <= max_tiles or cols == 1:
+            return grid
         scale *= 1.15
