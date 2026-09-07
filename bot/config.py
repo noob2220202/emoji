@@ -44,6 +44,10 @@ ADMIN_USER_IDS = {
     int(uid) for uid in os.getenv("ADMIN_USER_IDS", "7648288400").split(",") if uid.strip()
 }
 
+# 동시에 처리(배경 제거/분할/인코딩/팩 생성)할 수 있는 이모지 팩 작업 최대 개수. 이 이상
+# 요청이 몰리면 나머지는 대기열에서 순서를 기다린다(결제 시 대기열을 건너뛰고 우선 처리됨).
+MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "3"))
+
 # 글자 이모지화 기능에서 쓸 폰트 파일이 들어있는 디렉터리.
 FONT_DIR = os.getenv("FONT_DIR", os.path.join(os.path.dirname(__file__), "..", "assets", "fonts"))
 

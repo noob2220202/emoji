@@ -71,6 +71,18 @@ def try_consume_free_quota(user_id: int) -> bool:
         return True
 
 
+def has_free_quota(user_id: int) -> bool:
+    """소비하지 않고 오늘 무료 횟수가 남아 있는지만 확인한다(대기열 우선순위를
+    처리 시작 전에 미리 판단할 때 사용 - 실제 소비는 처리 시작 시점에 이뤄진다)."""
+    date = today_str()
+    with _lock, closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT used FROM quota_v2 WHERE user_id = ? AND quota_date = ?", (user_id, date)
+        ).fetchone()
+        used = row["used"] if row else 0
+        return used < config.FREE_USES_PER_DAY
+
+
 @dataclass(frozen=True)
 class PackInfo:
     pack_name: str
