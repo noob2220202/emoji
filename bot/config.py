@@ -9,11 +9,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 # 타일 하나가 원본 이미지에서 차지했으면 하는 목표 픽셀 크기.
 # 이 값을 기준으로 원본 이미지 비율에 맞춰 열/행 개수가 자동 계산된다.
-TARGET_TILE_PX = int(os.getenv("TARGET_TILE_PX", "120"))
+# 값이 작을수록 타일(이모지)이 더 잘게, 더 많이 나뉜다.
+TARGET_TILE_PX = int(os.getenv("TARGET_TILE_PX", "60"))
 
-# 이모지 팩 하나에 들어갈 수 있는 최대 타일(이모지) 개수.
-# 텔레그램 자체 한도(현재 최대 200)보다 낮게 잡아 여유를 둔다.
-MAX_TILES = int(os.getenv("MAX_TILES", "100"))
+# 이모지 팩 하나에 들어갈 수 있는 최대 타일(이모지) 개수. 텔레그램 자체 한도(현재 200)에 맞춤.
+MAX_TILES = int(os.getenv("MAX_TILES", "200"))
 
 # 영상/GIF 이모지 최대 길이(초). 텔레그램 커스텀 이모지 영상 스티커 규격상 3초 이하.
 MAX_VIDEO_DURATION = float(os.getenv("MAX_VIDEO_DURATION", "3"))
