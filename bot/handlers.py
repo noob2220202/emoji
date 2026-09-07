@@ -1,8 +1,11 @@
 import html
 import logging
+import os
+import shutil
+import tempfile
 import time
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, Update
 from telegram.constants import StickerFormat
@@ -13,7 +16,8 @@ from .background_removal import remove_background_image
 from .grid import Grid
 from .image_split import split_static_image
 from .stickers import MAX_PACK_CAPACITY, add_tiles_to_pack, create_new_pack, get_live_pack_state
-from .text_emoji import FONTS, STYLES, render_text_emoji
+from .text_emoji import FONTS, STYLES, render_text_emoji, render_text_emoji_animated
+from .video_split import split_animated
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +36,10 @@ def _new_job(user_id: int, first_name: str) -> str:
         "chat_id": None,
         "status_message_id": None,
         "stage": None,
-        "image_bytes": None,
+        "sticker_format": None,  # StickerFormat.STATIC | StickerFormat.VIDEO
+        "image_bytes": None,  # 정지: PNG 바이트
+        "source_video_path": None,  # 움직이는 버전: 분할 전 원본 배너 webm 경로
+        "tile_dir": None,  # 움직이는 버전: 타일 webm들이 들어있는 임시 디렉터리
         "grid": None,
         "tiles": None,
         "pack_candidates": [],
@@ -45,14 +52,25 @@ def _new_job(user_id: int, first_name: str) -> str:
     return job_id
 
 
+def _cleanup_job_files(job: dict) -> None:
+    path = job.get("source_video_path")
+    if path and os.path.exists(path):
+        os.remove(path)
+    tile_dir = job.get("tile_dir")
+    if tile_dir and os.path.exists(tile_dir):
+        shutil.rmtree(tile_dir, ignore_errors=True)
+
+
 async def cleanup_pending(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """방치된 요청을 주기적으로 정리한다."""
+    """방치된 요청을 주기적으로 정리한다(임시 영상 파일 포함)."""
     now = time.time()
     stale_ids = [jid for jid, job in _jobs.items() if now - job["ts"] > _JOB_TTL_SECONDS]
     for jid in stale_ids:
         job = _jobs.pop(jid, None)
-        if job and _awaiting.get(job["user_id"]) == jid:
-            _awaiting.pop(job["user_id"], None)
+        if job:
+            if _awaiting.get(job["user_id"]) == jid:
+                _awaiting.pop(job["user_id"], None)
+            _cleanup_job_files(job)
 
 
 def _esc(text: str) -> str:
@@ -88,35 +106,14 @@ async def _update_status(context: ContextTypes.DEFAULT_TYPE, job: dict, text: st
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "✨ <b>이모지 팩 제작소</b>에 오신 걸 환영해요!\n\n"
-        "📸 사진을 보내주시면 자동으로 격자로 잘라서\n"
-        "텔레그램 <b>커스텀(프리미엄) 이모지 팩</b>으로 만들어 드려요.\n\n"
+        "📸 사진을 보내거나 ✍️ <b>/text 문구</b>로 글자를 꾸며서\n"
+        "텔레그램 <b>커스텀(프리미엄) 이모지 팩</b>으로 만들어 드려요.\n"
+        "(예: <code>/text 펭구 화이팅</code>)\n\n"
         "<blockquote>💡 화질을 살리려면 사진이 아니라 <b>파일(문서)</b>로 압축 없이 보내주세요.</blockquote>\n\n"
-        "✍️ <b>/text 문구</b> 로 글자를 꾸며서 이모지로 만들 수도 있어요 (예: <code>/text 펭구 화이팅</code>)\n\n"
-        "<b>💰 요금 안내</b>\n"
-        f"이모지 팩 1회 제작: <b>{config.STAR_PRICE} ⭐</b> · 하루 무료 <b>{config.FREE_USES_PER_DAY}회</b>\n"
-        "🕛 무료 횟수는 매일 <u>자정(KST)</u>에 초기화돼요.\n\n"
+        f"💰 이모지 팩 1회 제작에 <b>{config.STAR_PRICE} ⭐</b>이 들지만, 매일 무료로도 이용하실 수 있어요.\n"
         "📦 기존에 만든 팩이 있으면 이어서 추가할 수도 있어요!\n\n"
         "지금 바로 사진을 보내거나 /text 를 입력해보세요 🚀"
     )
-
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    packs = db.list_user_packs(user.id)
-    lines = ["📊 <b>내 현황</b>\n"]
-    if _is_admin(user.id):
-        lines.append("👑 관리자 계정 — 횟수 제한 <b>무제한</b>")
-    else:
-        left = db.remaining_free_quota(user.id)
-        lines.append(f"🎁 오늘 남은 무료 횟수 — <b>{left}회</b>")
-    lines.append("")
-    if packs:
-        lines.append("📦 <b>내 이모지 팩</b>")
-        for p in packs:
-            lines.append(f"🖼 {_esc(p.title)} — {p.tile_count}/{MAX_PACK_CAPACITY}개")
-    else:
-        lines.append("아직 만든 이모지 팩이 없어요. 사진을 보내보세요!")
-    await update.message.reply_text("\n".join(lines))
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +190,7 @@ async def on_bg_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
 
     job["image_bytes"] = image_bytes
+    job["sticker_format"] = StickerFormat.STATIC
     await _ask_pack_selection(context, job_id)
 
 
@@ -225,6 +223,17 @@ def _style_keyboard(job_id: str) -> InlineKeyboardMarkup:
     if row:
         rows.append(row)
     return InlineKeyboardMarkup(rows)
+
+
+def _anim_keyboard(job_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🖼 정지 이미지", callback_data=f"txtanim:{job_id}:static"),
+                InlineKeyboardButton("🎬 움직이는 GIF", callback_data=f"txtanim:{job_id}:gif"),
+            ]
+        ]
+    )
 
 
 async def _ask_font_choice(message: Message, job_id: str) -> None:
@@ -276,16 +285,50 @@ async def on_style_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text("⌛ 요청이 만료됐어요. /text 로 다시 시작해주세요.")
         return
 
-    await _update_status(context, job, "🖌 이미지를 만드는 중...")
+    job["style_key"] = style_key
+    await _update_status(context, job, "🖼 정지 이미지로 만들까요, 🎬 움직이는 GIF로 만들까요?", _anim_keyboard(job_id))
+
+
+async def on_anim_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
     try:
-        image_bytes = render_text_emoji(job["phrase"], job["font_key"], style_key)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("글자 이모지 렌더링 실패")
-        _jobs.pop(job_id, None)
-        await _update_status(context, job, f"❌ 이미지 생성에 실패했습니다: {_esc(str(exc))}")
+        _, job_id, mode = query.data.split(":", 2)
+    except ValueError:
         return
 
-    job["image_bytes"] = image_bytes
+    job = _jobs.get(job_id)
+    if job is None:
+        await query.edit_message_text("⌛ 요청이 만료됐어요. /text 로 다시 시작해주세요.")
+        return
+
+    phrase, font_key, style_key = job["phrase"], job["font_key"], job["style_key"]
+
+    if mode == "static":
+        await _update_status(context, job, "🖌 이미지를 만드는 중...")
+        try:
+            job["image_bytes"] = render_text_emoji(phrase, font_key, style_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("글자 이모지 렌더링 실패")
+            _jobs.pop(job_id, None)
+            await _update_status(context, job, f"❌ 이미지 생성에 실패했습니다: {_esc(str(exc))}")
+            return
+        job["sticker_format"] = StickerFormat.STATIC
+    else:
+        await _update_status(context, job, "🎬 움직이는 이미지를 만드는 중... (시간이 좀 걸려요)")
+        video_path = os.path.join(tempfile.gettempdir(), f"text_emoji_{job_id}.webm")
+        try:
+            render_text_emoji_animated(phrase, font_key, style_key, video_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("글자 이모지 애니메이션 렌더링 실패")
+            _jobs.pop(job_id, None)
+            if os.path.exists(video_path):
+                os.remove(video_path)
+            await _update_status(context, job, f"❌ 이미지 생성에 실패했습니다: {_esc(str(exc))}")
+            return
+        job["source_video_path"] = video_path
+        job["sticker_format"] = StickerFormat.VIDEO
+
     await _ask_pack_selection(context, job_id)
 
 
@@ -296,7 +339,7 @@ async def on_style_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def _ask_pack_selection(context: ContextTypes.DEFAULT_TYPE, job_id: str) -> None:
     job = _jobs[job_id]
-    candidates = db.list_user_packs(job["user_id"])
+    candidates = db.list_user_packs(job["user_id"], job["sticker_format"].value)
     job["pack_candidates"] = candidates
 
     buttons: List[List[InlineKeyboardButton]] = [
@@ -407,15 +450,36 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ---------------------------------------------------------------------------
 
 
+def _split_job(job: dict):
+    """job의 소스(정지 이미지 또는 움직이는 배너)를 실제로 타일로 쪼갠다."""
+    if job["sticker_format"] == StickerFormat.VIDEO:
+        out_dir = tempfile.mkdtemp(prefix="emoji_tiles_")
+        job["tile_dir"] = out_dir
+        grid, tile_paths = split_animated(
+            job["source_video_path"],
+            out_dir,
+            job["tile_count"],
+            config.MAX_TILES,
+            config.ANIM_TILE_MAX_DURATION,
+            config.ANIM_TILE_MAX_BYTES,
+        )
+        tiles = [p for row in tile_paths for p in row]
+    else:
+        grid, tiles_matrix = split_static_image(job["image_bytes"], job["tile_count"], config.MAX_TILES)
+        tiles = [t for row in tiles_matrix for t in row]
+    return grid, tiles
+
+
 async def _do_split_and_continue(context: ContextTypes.DEFAULT_TYPE, job_id: str) -> None:
     job = _jobs[job_id]
-    await _update_status(context, job, "🔍 이미지를 분석하고 이모지로 쪼개는 중...")
+    await _update_status(context, job, "🔍 분석하고 이모지로 쪼개는 중...")
     try:
-        grid, tiles = split_static_image(job["image_bytes"], job["tile_count"], config.MAX_TILES)
+        grid, tiles = _split_job(job)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("이미지 분할 실패")
+        logger.exception("분할 실패")
         _jobs.pop(job_id, None)
-        await _update_status(context, job, f"❌ 이미지 처리 중 오류가 발생했습니다: {_esc(str(exc))}")
+        _cleanup_job_files(job)
+        await _update_status(context, job, f"❌ 처리 중 오류가 발생했습니다: {_esc(str(exc))}")
         return
 
     target = job["target_pack"]
@@ -423,13 +487,15 @@ async def _do_split_and_continue(context: ContextTypes.DEFAULT_TYPE, job_id: str
         live = await get_live_pack_state(context.bot, target["pack_name"])
         if live is None:
             _jobs.pop(job_id, None)
+            _cleanup_job_files(job)
             await _update_status(
                 context, job, f"❌ '{_esc(target['title'])}' 팩을 찾을 수 없어요. 다시 시도해주세요."
             )
             return
         live_fmt, live_count = live
-        if live_fmt != "static" or live_count + grid.total > MAX_PACK_CAPACITY:
+        if live_fmt != job["sticker_format"].value or live_count + grid.total > MAX_PACK_CAPACITY:
             _jobs.pop(job_id, None)
+            _cleanup_job_files(job)
             await _update_status(
                 context,
                 job,
@@ -439,7 +505,7 @@ async def _do_split_and_continue(context: ContextTypes.DEFAULT_TYPE, job_id: str
             return
 
     job["grid"] = grid
-    job["tiles"] = [tile for row in tiles for tile in row]
+    job["tiles"] = tiles
 
     # 요청한 조각 수는 정사각형 타일 제약 때문에 정확히 맞지 않고 종횡비에 맞는 가장
     # 가까운 값으로 근사될 수 있으므로, 결제/무료 처리 전에 실제 결과를 보여준다.
@@ -464,17 +530,15 @@ async def _check_quota_and_proceed(context: ContextTypes.DEFAULT_TYPE, job_id: s
         return
 
     if db.try_consume_free_quota(user_id):
-        left = db.remaining_free_quota(user_id)
-        await _update_status(
-            context,
-            job,
-            f"🎁 오늘의 무료 횟수로 처리할게요!\n<blockquote>오늘 남은 무료 {left}회</blockquote>\n\n⏳ 이모지 팩 만드는 중...",
-        )
+        await _update_status(context, job, "🎁 무료로 처리할게요!\n\n⏳ 이모지 팩 만드는 중...")
         await _finalize_job(context, job_id)
         return
 
     await _update_status(
-        context, job, f"⭐ 오늘 무료 횟수를 모두 사용하셨어요.\n<b>{config.STAR_PRICE} Stars</b>로 결제하면 바로 만들어 드릴게요."
+        context,
+        job,
+        "🚫 오늘 무료 플랜을 모두 사용하셨어요. <u>내일 다시 무료로</u> 이용하실 수 있어요!\n\n"
+        f"지금 바로 만들고 싶다면 <b>{config.STAR_PRICE} Stars</b>로 결제해주세요 ⭐",
     )
     await context.bot.send_invoice(
         chat_id=job["chat_id"],
@@ -538,21 +602,20 @@ async def _finalize_job(context: ContextTypes.DEFAULT_TYPE, job_id: str) -> None
     target = job["target_pack"]
     user_id = job["user_id"]
     charge_id = job.get("payment_charge_id")
+    sticker_format = job["sticker_format"].value
 
     try:
         if target["mode"] == "new":
             me = await bot.get_me()
             title = target["title"][:64]
             pack_name = await create_new_pack(
-                bot, user_id, me.username, title, tiles, StickerFormat.STATIC.value, config.EMOJI_PLACEHOLDER
+                bot, user_id, me.username, title, tiles, sticker_format, config.EMOJI_PLACEHOLDER
             )
-            db.record_new_pack(pack_name, user_id, title, "static", grid.total)
+            db.record_new_pack(pack_name, user_id, title, sticker_format, grid.total)
         else:
             pack_name = target["pack_name"]
             title = target["title"]
-            await add_tiles_to_pack(
-                bot, user_id, pack_name, tiles, StickerFormat.STATIC.value, config.EMOJI_PLACEHOLDER
-            )
+            await add_tiles_to_pack(bot, user_id, pack_name, tiles, sticker_format, config.EMOJI_PLACEHOLDER)
             db.add_tiles_to_pack_record(pack_name, grid.total)
     except Exception as exc:  # noqa: BLE001
         logger.exception("이모지 팩 생성/추가 실패")
@@ -566,21 +629,19 @@ async def _finalize_job(context: ContextTypes.DEFAULT_TYPE, job_id: str) -> None
             )
         else:
             await _update_status(context, job, f"❌ 이모지 팩 생성에 실패했습니다: {_esc(str(exc))}")
+        _cleanup_job_files(job)
         return
 
-    link = f"https://t.me/addemoji/{pack_name}"
-    if _is_admin(user_id):
-        quota_line = "👑 관리자 계정 — 횟수 제한 무제한"
-    else:
-        left = db.remaining_free_quota(user_id)
-        quota_line = f"🎁 오늘 남은 무료 {left}회"
+    _cleanup_job_files(job)
 
+    link = f"https://t.me/addemoji/{pack_name}"
+    admin_note = "\n\n<blockquote>👑 관리자 계정 — 횟수 제한 무제한</blockquote>" if _is_admin(user_id) else ""
     await _update_status(
         context,
         job,
         "🎉 <b>완성!</b>\n\n"
         f"📦 팩: <b>{_esc(title)}</b>\n"
         f"🔢 <b>{grid.cols}x{grid.rows}</b> ({grid.total}개) 추가됨\n"
-        f"🔗 {link}\n\n"
-        f"<blockquote>{quota_line}</blockquote>",
+        f"🔗 {link}"
+        f"{admin_note}",
     )

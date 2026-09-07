@@ -26,14 +26,6 @@ def test_free_quota_allows_up_to_daily_limit_then_blocks(fresh_db):
     assert db.try_consume_free_quota(user_id) is False
 
 
-def test_remaining_free_quota_reflects_usage(fresh_db):
-    db = fresh_db
-    user_id = 333
-    assert db.remaining_free_quota(user_id) == 2
-    db.try_consume_free_quota(user_id)
-    assert db.remaining_free_quota(user_id) == 1
-
-
 def test_quota_is_per_user(fresh_db):
     db = fresh_db
     db.try_consume_free_quota(1)

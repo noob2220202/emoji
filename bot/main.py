@@ -17,7 +17,6 @@ from . import config, db, handlers
 COMMANDS = [
     BotCommand("start", "봇 소개 및 사용법"),
     BotCommand("text", "글자를 꾸며서 이모지로 만들기"),
-    BotCommand("status", "내 무료 횟수 / 이모지 팩 목록 보기"),
 ]
 
 
@@ -45,7 +44,6 @@ def main() -> None:
     )
 
     app.add_handler(CommandHandler("start", handlers.start))
-    app.add_handler(CommandHandler("status", handlers.status))
     app.add_handler(CommandHandler("text", handlers.text_command))
     app.add_handler(MessageHandler(filters.PHOTO, handlers.on_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handlers.on_document))
@@ -53,6 +51,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handlers.on_pack_select, pattern=r"^packsel:"))
     app.add_handler(CallbackQueryHandler(handlers.on_font_choice, pattern=r"^txtfont:"))
     app.add_handler(CallbackQueryHandler(handlers.on_style_choice, pattern=r"^txtstyle:"))
+    app.add_handler(CallbackQueryHandler(handlers.on_anim_choice, pattern=r"^txtanim:"))
     app.add_handler(PreCheckoutQueryHandler(handlers.on_pre_checkout_query))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handlers.on_successful_payment))
     # 팩 이름 / 조각 수 / 글자 이모지 문구처럼 다음 텍스트 메시지를 기다리는 단계를 처리한다.

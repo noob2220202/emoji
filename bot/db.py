@@ -71,17 +71,6 @@ def try_consume_free_quota(user_id: int) -> bool:
         return True
 
 
-def remaining_free_quota(user_id: int) -> int:
-    """오늘 남은 무료 횟수."""
-    date = today_str()
-    with _lock, closing(_connect()) as conn:
-        row = conn.execute(
-            "SELECT used FROM quota_v2 WHERE user_id = ? AND quota_date = ?", (user_id, date)
-        ).fetchone()
-    used = row["used"] if row else 0
-    return max(0, config.FREE_USES_PER_DAY - used)
-
-
 @dataclass(frozen=True)
 class PackInfo:
     pack_name: str
