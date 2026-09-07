@@ -13,6 +13,9 @@ module.exports = {
       watch: false,
       env: {
         PYTHONUNBUFFERED: "1",
+        // bot/__init__.py에서도 설정하지만, 혹시 다른 방식으로 실행될 때도 안전하게
+        // numba JIT을 꺼서 rembg 임포트가 느려지거나 멈추는 것을 막는다.
+        NUMBA_DISABLE_JIT: "1",
       },
     },
   ],
