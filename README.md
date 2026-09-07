@@ -2,6 +2,25 @@
 
 이미지나 GIF/영상을 보내면 자동으로 격자로 잘라 텔레그램 커스텀 이모지 팩(`t.me/addemoji/...`)을 만들어주는 봇입니다.
 
+## 빠른 시작 (git clone → pm2 start)
+
+```bash
+git clone <이 저장소 URL>
+cd emoji
+
+pip install -r requirements.txt        # 가상환경 없이 시스템에 바로 설치
+# (에러 나면: pip install --break-system-packages -r requirements.txt)
+
+cp .env.example .env
+# .env를 열어 BOT_TOKEN=... 에 BotFather에서 받은 토큰을 넣는다
+
+npm install -g pm2                     # pm2가 없다면
+pm2 start ecosystem.config.js
+pm2 logs emoji-bot                     # 정상 기동됐는지 로그 확인
+```
+
+각 단계에 대한 자세한 설명은 아래 [설치](#설치), [설정](#설정), [실행](#실행) 항목을 참고하세요.
+
 ## 동작 방식
 
 1. 사용자가 사진/파일(이미지) 또는 GIF/영상을 보냅니다.
@@ -65,11 +84,40 @@ cp .env.example .env
 
 ## 실행
 
+### 그냥 실행 (포그라운드)
+
 ```bash
 python -m bot.main
 ```
 
 봇에게 `/start`를 보내거나 바로 이미지/GIF를 전송하면 됩니다.
+
+### pm2로 실행 (백그라운드 + 자동 재시작)
+
+서버에 계속 띄워둘 거라면 [pm2](https://pm2.keymetrics.io/)로 관리하는 걸 추천합니다.
+
+```bash
+npm install -g pm2   # pm2가 없다면 먼저 설치 (Node.js/npm 필요)
+pm2 start ecosystem.config.js
+```
+
+- `ecosystem.config.js`는 저장소에 이미 포함되어 있고, `python3 run.py`를 실행하도록 되어 있습니다
+  (`bot/main.py`는 상대 임포트를 쓰기 때문에 `python -m bot.main`처럼 패키지로 실행해야 하는데,
+  pm2는 스크립트 파일 경로만 받을 수 있어서 `run.py`라는 얇은 진입점을 따로 뒀습니다).
+- `.env` 파일은 `bot/config.py`가 `python-dotenv`로 알아서 읽으므로 pm2 설정에 토큰을 직접 넣을 필요는 없습니다.
+  단, `pm2 start`를 실행하는 디렉터리(`cwd`)가 저장소 루트여야 `.env`를 찾습니다.
+
+자주 쓰는 pm2 명령어:
+
+```bash
+pm2 status              # 실행 상태 확인
+pm2 logs emoji-bot       # 실시간 로그
+pm2 restart emoji-bot    # 재시작 (코드나 .env 수정 후)
+pm2 stop emoji-bot       # 중지
+pm2 delete emoji-bot     # pm2 목록에서 제거
+pm2 save                 # 현재 pm2 프로세스 목록 저장
+pm2 startup              # OS 재부팅 시 pm2가 자동으로 살아나도록 등록 (출력되는 명령어를 그대로 실행)
+```
 
 ## 테스트
 
