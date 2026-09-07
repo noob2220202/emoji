@@ -63,6 +63,8 @@ pm2 logs emoji-bot                     # 정상 기동됐는지 로그 확인
 - `/status` 명령으로 오늘 남은 무료 횟수와 내가 만든 이모지 팩 목록을 볼 수 있습니다.
 - 가격/무료 횟수는 `.env`의 `STAR_PRICE_IMAGE`, `STAR_PRICE_GIF`, `FREE_IMAGE_PER_DAY`, `FREE_GIF_PER_DAY`로
   조정할 수 있습니다.
+- `.env`의 `ADMIN_USER_IDS`(쉼표로 여러 명 구분)에 텔레그램 유저 ID를 넣으면, 그 유저는 무료 횟수
+  제한과 Stars 결제 없이 항상 무제한으로 처리됩니다. 기본값에 이미 `7648288400`이 들어있습니다.
 
 ## 이모지 팩 선택 / 이어서 추가하기
 

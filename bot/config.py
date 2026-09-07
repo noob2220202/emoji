@@ -47,3 +47,9 @@ FREE_GIF_PER_DAY = int(os.getenv("FREE_GIF_PER_DAY", "1"))
 # 무료 횟수를 다 쓴 뒤 텔레그램 Stars로 결제할 때의 가격 (Stars 개수, 정수)
 STAR_PRICE_IMAGE = int(os.getenv("STAR_PRICE_IMAGE", "10"))
 STAR_PRICE_GIF = int(os.getenv("STAR_PRICE_GIF", "20"))
+
+# 무료 횟수 제한과 Stars 결제 없이 항상 무제한으로 처리할 관리자 텔레그램 유저 ID 목록
+# (쉼표로 여러 명 구분 가능, 예: "111,222,333").
+ADMIN_USER_IDS = {
+    int(uid) for uid in os.getenv("ADMIN_USER_IDS", "7648288400").split(",") if uid.strip()
+}

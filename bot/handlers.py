@@ -96,15 +96,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def _is_admin(user_id: int) -> bool:
+    return user_id in config.ADMIN_USER_IDS
+
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    img_left, gif_left = db.remaining_free_quota(user.id)
     packs = db.list_user_packs(user.id)
-    lines = [
-        "📊 <b>내 현황</b>\n",
-        f"🎁 오늘 남은 무료 횟수 — 🖼 이미지 <b>{img_left}회</b> · 🎞 GIF <b>{gif_left}회</b>",
-        "",
-    ]
+    lines = ["📊 <b>내 현황</b>\n"]
+    if _is_admin(user.id):
+        lines.append("👑 관리자 계정 — 횟수 제한 <b>무제한</b>")
+    else:
+        img_left, gif_left = db.remaining_free_quota(user.id)
+        lines.append(f"🎁 오늘 남은 무료 횟수 — 🖼 이미지 <b>{img_left}회</b> · 🎞 GIF <b>{gif_left}회</b>")
+    lines.append("")
     if packs:
         lines.append("📦 <b>내 이모지 팩</b>")
         for p in packs:
@@ -386,6 +391,11 @@ async def _check_quota_and_proceed(
     user_id = job["user_id"]
     kind = _quota_kind(job["kind"])
 
+    if _is_admin(user_id):
+        await status_msg.edit_text("👑 관리자 계정이라 무제한으로 처리할게요!\n\n⏳ 이모지 팩 만드는 중...")
+        await _finalize_job(context, status_msg, job_id)
+        return
+
     if db.try_consume_free_quota(user_id, kind):
         img_left, gif_left = db.remaining_free_quota(user_id)
         await status_msg.edit_text(
@@ -497,11 +507,15 @@ async def _finalize_job(context: ContextTypes.DEFAULT_TYPE, status_msg: Message,
     _cleanup_job_files(job)
 
     link = f"https://t.me/addemoji/{pack_name}"
-    img_left, gif_left = db.remaining_free_quota(user_id)
+    if _is_admin(user_id):
+        quota_line = "👑 관리자 계정 — 횟수 제한 무제한"
+    else:
+        img_left, gif_left = db.remaining_free_quota(user_id)
+        quota_line = f"🎁 오늘 남은 무료 — 🖼 {img_left}회 · 🎞 {gif_left}회"
     await status_msg.edit_text(
         "🎉 <b>완성!</b>\n\n"
         f"📦 팩: <b>{_esc(title)}</b>\n"
         f"🔢 <b>{grid.cols}x{grid.rows}</b> ({grid.total}개) 추가됨\n"
         f"🔗 {link}\n\n"
-        f"<blockquote>🎁 오늘 남은 무료 — 🖼 {img_left}회 · 🎞 {gif_left}회</blockquote>"
+        f"<blockquote>{quota_line}</blockquote>"
     )
