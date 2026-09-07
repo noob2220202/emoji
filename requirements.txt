@@ -1,5 +1,9 @@
-python-telegram-bot==21.6
+python-telegram-bot[job-queue]==21.6
 Pillow>=10.0
 python-dotenv>=1.0
 opencv-python-headless>=4.9
 imageio-ffmpeg>=0.5
+rembg[cpu]>=2.0.59
+# 가상환경 없이 시스템 파이썬에 설치할 때, apt로 깔린 시스템 cryptography 패키지가
+# cffi를 필요로 하는데 누락되어 있는 경우가 있어 명시적으로 추가해둔다.
+cffi>=1.16

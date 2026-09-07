@@ -25,3 +25,10 @@ MAX_VIDEO_BYTES = int(os.getenv("MAX_VIDEO_BYTES", str(256 * 1024)))
 EMOJI_PLACEHOLDER = os.getenv("EMOJI_PLACEHOLDER", "\U0001F642")  # 🙂
 
 TMP_DIR = os.getenv("TMP_DIR", tempfile.gettempdir())
+
+# 배경 제거(누끼)에 사용할 rembg 모델. u2netp는 가볍고 빠른 대신 품질이 다소 낮고,
+# u2net/isnet-general-use 등은 더 정확하지만 느리다.
+REMBG_MODEL = os.getenv("REMBG_MODEL", "u2netp")
+
+# 배경 제거를 요청할지 물어보는 선택지를 보여줄지 여부. false면 항상 원본 그대로 처리한다.
+OFFER_BACKGROUND_REMOVAL = os.getenv("OFFER_BACKGROUND_REMOVAL", "true").lower() != "false"

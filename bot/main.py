@@ -1,6 +1,6 @@
 import logging
 
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from . import config, handlers
 
@@ -20,6 +20,10 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Document.ALL, handlers.on_document))
     app.add_handler(MessageHandler(filters.ANIMATION, handlers.on_animation))
     app.add_handler(MessageHandler(filters.VIDEO, handlers.on_video))
+    app.add_handler(CallbackQueryHandler(handlers.on_choice, pattern=r"^proceed:"))
+
+    if app.job_queue is not None:
+        app.job_queue.run_repeating(handlers.cleanup_pending, interval=300, first=300)
 
     app.run_polling()
 

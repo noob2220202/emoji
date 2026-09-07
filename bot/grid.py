@@ -11,6 +11,7 @@
   다시 계산한다.
 """
 
+import math
 from dataclasses import dataclass
 
 
@@ -44,8 +45,10 @@ def compute_grid(width: int, height: int, target_tile_px: int = 120, max_tiles: 
     scale = 1.0
     while True:
         cols = max(1, round(width / (target_tile_px * scale)))
-        tile_size = max(1, round(width / cols))
-        rows = max(1, round(height / tile_size))
+        # ceil을 써야 tile_size*cols/rows(패딩된 캔버스 크기)가 항상 원본 크기 이상이
+        # 되어 원본이 잘려나가지 않는다(round는 잘림이 생길 수 있음).
+        tile_size = max(1, math.ceil(width / cols))
+        rows = max(1, math.ceil(height / tile_size))
         if cols * rows <= max_tiles or (cols == 1 and rows == 1):
             return Grid(cols=cols, rows=rows, tile_size=tile_size)
         scale *= 1.15

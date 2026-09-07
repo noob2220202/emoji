@@ -5,26 +5,17 @@
 """
 
 import os
-import shutil
 import subprocess
 from typing import List, Tuple
 
 import cv2
 
+from .ffmpeg_util import ffmpeg_path
 from .grid import Grid, compute_grid
 
 EMOJI_SIZE = 100
 # 파일 크기가 목표치를 넘으면 CRF(품질)를 낮춰가며 재인코딩을 시도한다.
 CRF_ATTEMPTS = (30, 34, 38, 42, 46, 50)
-
-
-def _ffmpeg_path() -> str:
-    path = shutil.which("ffmpeg")
-    if path:
-        return path
-    import imageio_ffmpeg
-
-    return imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def probe_video(path: str) -> Tuple[int, int, float, float]:
@@ -56,7 +47,7 @@ def split_animated(
     grid = compute_grid(width, height, target_tile_px, max_tiles)
     clip_duration = min(duration, max_duration) if duration > 0 else max_duration
 
-    ffmpeg = _ffmpeg_path()
+    ffmpeg = ffmpeg_path()
     tile_paths: List[List[str]] = []
     for r in range(grid.rows):
         row: List[str] = []
@@ -64,7 +55,9 @@ def split_animated(
             x, y = c * grid.tile_size, r * grid.tile_size
             out_path = os.path.join(out_dir, f"tile_{r}_{c}.webm")
             vf = (
-                f"pad={grid.padded_width}:{grid.padded_height}:0:0:black,"
+                # black@0.0: 입력에 알파 채널이 있으면(예: 배경 제거된 영상) 패딩 영역이
+                # 투명하게 채워지고, 없으면 그냥 불투명한 검정으로 채워진다.
+                f"pad={grid.padded_width}:{grid.padded_height}:0:0:black@0.0,"
                 f"crop={grid.tile_size}:{grid.tile_size}:{x}:{y},"
                 f"scale={EMOJI_SIZE}:{EMOJI_SIZE}:flags=lanczos,fps=30"
             )
@@ -100,14 +93,14 @@ def _encode_with_size_limit(
             out_path,
         ]
         try:
-            subprocess.run(cmd, check=True, capture_output=True)
-        except subprocess.CalledProcessError as exc:
-            last_error = exc
+            result = subprocess.run(cmd, capture_output=True)
+        except OSError as exc:
+            raise RuntimeError(f"ffmpeg 실행 실패: {exc}") from exc
+        if result.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+            last_error = result.stderr.decode(errors="ignore")
             continue
         if os.path.getsize(out_path) <= max_bytes:
             return
-    if last_error is not None and not os.path.exists(out_path):
-        raise RuntimeError(
-            f"ffmpeg 인코딩 실패: {last_error.stderr.decode(errors='ignore')[-500:]}"
-        )
+    if last_error is not None:
+        raise RuntimeError(f"ffmpeg 인코딩 실패: {last_error[-500:]}")
     # 마지막 시도 결과가 용량 초과라도 일단 사용한다 (텔레그램이 거부하면 상위에서 에러 처리됨).

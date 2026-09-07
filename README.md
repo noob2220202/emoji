@@ -10,19 +10,41 @@
      그 열 개수로 가로를 정확히 나눈 값을 타일 크기로 삼아 행 개수를 정합니다.
    - 이렇게 하면 타일이 항상 정사각형이 되어 100x100으로 리사이즈해도 비율이 왜곡되지 않습니다.
    - 계산된 타일 개수가 `MAX_TILES`를 넘으면 목표 타일 크기를 키워가며(=개수를 줄여가며) 재계산합니다.
-3. 각 타일을 100x100 규격으로 만듭니다.
+3. (선택) 배경 제거(누끼)를 고르면, 분할 전에 원본 전체에서 배경을 지웁니다.
+   - 이미지: [rembg](https://github.com/danielgatis/rembg)로 배경 제거 → 투명 배경 PNG
+   - GIF/영상: 프레임마다 rembg를 돌려 배경을 지운 뒤, 알파 채널을 가진 WEBM(VP9)으로 재조립
+4. 각 타일을 100x100 규격으로 만듭니다.
    - 정지 이미지: Pillow로 크롭 후 리사이즈 → PNG
    - GIF/영상: ffmpeg로 crop+scale, 3초 이하로 자르고, 256KB 이하가 될 때까지 CRF를 조정하며 재인코딩 → WEBM(VP9)
-4. `createNewStickerSet` / `addStickerToSet`(sticker_type=`custom_emoji`)로 이모지 팩을 생성하고, 완성된 팩 링크를 답장으로 보냅니다.
+5. `createNewStickerSet` / `addStickerToSet`(sticker_type=`custom_emoji`)로 이모지 팩을 생성하고, 완성된 팩 링크를 답장으로 보냅니다.
 
 타일은 왼쪽 위부터 순서대로 만들어지므로, 완성된 이모지들을 순서대로(행 우선) 이어 붙이면 원본 그림이 재구성됩니다.
 
+## 배경 제거(누끼) 기능
+
+이미지나 GIF/영상을 보내면 봇이 "원본 그대로" / "배경 제거(누끼) 후" 중 하나를 버튼으로 물어봅니다.
+배경 제거는 [rembg](https://github.com/danielgatis/rembg)(U^2-Net 기반 오픈소스 배경 제거 라이브러리)를 사용합니다.
+
+- 처음 실행 시 선택한 모델 파일을 자동으로 다운로드합니다(`~/.rembg`에 캐시됨, 인터넷 필요).
+- 기본 모델은 빠른 `u2netp`입니다. 정확도가 더 필요하면 `.env`의 `REMBG_MODEL`을 `u2net`이나
+  `isnet-general-use` 등으로 바꾸세요(대신 느려집니다).
+- GIF/영상은 프레임마다 배경 제거를 돌리기 때문에 프레임 수가 많으면 시간이 꽤 걸릴 수 있습니다.
+- 버튼을 누르지 않고 방치된 요청은 15분 후 자동으로 정리됩니다(임시 파일 포함).
+- 버튼 자체가 필요 없다면 `.env`의 `OFFER_BACKGROUND_REMOVAL=false`로 끌 수 있습니다(항상 원본 그대로 처리).
+
 ## 설치
 
+이 프로젝트는 가상환경 없이 시스템 파이썬에 바로 설치해서 씁니다.
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+배포판에 따라(Debian/Ubuntu 최신 버전 등) `error: externally-managed-environment` 에러가 날 수 있습니다.
+그럴 경우:
+
+```bash
+pip install --break-system-packages -r requirements.txt
 ```
 
 GIF/영상 처리를 위해 시스템에 `ffmpeg`이 설치되어 있으면 그것을 사용하고,
@@ -58,8 +80,9 @@ pip install pytest
 pytest
 ```
 
-영상 분할(`bot/video_split.py`)은 ffmpeg 바이너리가 필요해 단위 테스트에는 포함하지 않았습니다.
-실제로 GIF를 보내서 동작을 확인해보세요.
+영상 분할(`bot/video_split.py`)과 배경 제거(`bot/background_removal.py`)는 각각 ffmpeg 바이너리와
+rembg 모델 다운로드(인터넷)가 필요해 단위 테스트에는 포함하지 않았습니다. 실제로 이미지/GIF를
+보내서 동작을 확인해보세요.
 
 ## 알아두면 좋은 제약사항
 
@@ -71,6 +94,7 @@ pytest
 
 ## 다음에 추가할 기능 (로드맵)
 
+- [x] 배경 제거(누끼) 옵션
 - [ ] 등장/사라짐 등 이펙트 적용
 - [ ] 텔레그램 Stars 결제 연동 (유료 기능/한도 확장 등)
 - [ ] 그리드 크기 수동 지정 옵션 (`/split 5x5`)

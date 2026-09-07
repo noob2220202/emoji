@@ -32,3 +32,12 @@ def test_extreme_aspect_ratio_falls_back_to_single_tile_axis():
     grid = compute_grid(5000, 50, target_tile_px=100, max_tiles=20)
     assert grid.total <= 20
     assert grid.cols >= 1 and grid.rows >= 1
+
+
+def test_padded_dimensions_never_smaller_than_original():
+    # round()로 rows/tile_size를 계산하면 80x60, target=30일 때
+    # padded_height(54)가 원본 height(60)보다 작아져 원본이 잘려나가는 회귀가 있었다.
+    for width, height in [(80, 60), (333, 111), (1000, 1000), (2000, 400), (400, 2000), (37, 53)]:
+        grid = compute_grid(width, height, target_tile_px=30, max_tiles=100)
+        assert grid.padded_width >= width
+        assert grid.padded_height >= height
