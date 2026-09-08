@@ -17,7 +17,7 @@ from .background_removal import remove_background_image, remove_background_video
 from .grid import Grid
 from .image_split import split_static_image, split_static_image_single_row
 from .stickers import MAX_PACK_CAPACITY, add_tiles_to_pack, create_new_pack, get_live_pack_state
-from .text_emoji import FONTS, STYLES, render_text_emoji, render_text_emoji_animated
+from .text_emoji import EFFECTS, FONTS, STYLES, render_text_emoji, render_text_emoji_animated
 from .video_split import split_animated, split_animated_single_row
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,7 @@ def _new_job(user_id: int, first_name: str) -> str:
         "stage": None,
         "bg_mode": None,  # "nukki" | "plain" (photo/video 전용, 실제 제거는 처리 시작 시점에 수행)
         "anim_mode": None,  # "static" | "gif" (text 전용)
+        "effect_key": None,  # "wave" | "swing3d" | "particles" | "neon" | "glitch" (text+gif 전용)
         "sticker_format": None,  # StickerFormat.STATIC | StickerFormat.VIDEO
         "image_bytes": None,  # 정지: PNG 바이트
         "source_video_path": None,  # 영상 계열: 분할 전 원본(업로드 영상 또는 글자 배너) webm/mp4/gif 경로
@@ -335,6 +336,19 @@ def _anim_keyboard(job_id: str) -> InlineKeyboardMarkup:
     return _with_cancel(rows, job_id)
 
 
+def _effect_keyboard(job_id: str) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+    row: List[InlineKeyboardButton] = []
+    for key, label in EFFECTS.items():
+        row.append(InlineKeyboardButton(label, callback_data=f"txteffect:{job_id}:{key}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return _with_cancel(rows, job_id)
+
+
 async def _ask_font_choice(message: Message, job_id: str) -> None:
     await _send_status(message, _jobs[job_id], "🎨 <b>폰트를 선택해 주십시오.</b>", _font_keyboard(job_id))
 
@@ -394,6 +408,30 @@ async def on_anim_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # (_produce_tiles)에 수행한다.
     job["anim_mode"] = mode
     job["sticker_format"] = StickerFormat.STATIC if mode == "static" else StickerFormat.VIDEO
+
+    if mode == "gif":
+        await _update_status(
+            context, job, "✨ <b>움직이는 효과를 선택해 주십시오.</b>", _effect_keyboard(job_id)
+        )
+        return
+
+    await _ask_pack_selection(context, job_id)
+
+
+async def on_effect_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    try:
+        _, job_id, effect_key = query.data.split(":", 2)
+    except ValueError:
+        return
+
+    job = _jobs.get(job_id)
+    if job is None:
+        await query.edit_message_text("⌛ 요청이 만료되었습니다. 문구를 다시 입력해 주십시오.")
+        return
+
+    job["effect_key"] = effect_key
     await _ask_pack_selection(context, job_id)
 
 
@@ -843,7 +881,10 @@ async def _produce_tiles(context: ContextTypes.DEFAULT_TYPE, job_id: str) -> boo
             else:
                 video_path = os.path.join(tempfile.gettempdir(), f"text_emoji_{job_id}.webm")
                 job["source_video_path"] = video_path
-                await asyncio.to_thread(render_text_emoji_animated, phrase, font_key, style_key, video_path)
+                effect_key = job.get("effect_key") or "wave"
+                await asyncio.to_thread(
+                    render_text_emoji_animated, phrase, font_key, style_key, video_path, effect_key
+                )
                 out_dir = tempfile.mkdtemp(prefix="emoji_tiles_")
                 job["tile_dir"] = out_dir
                 grid, tile_paths = await asyncio.to_thread(

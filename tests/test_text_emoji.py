@@ -3,7 +3,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from bot.text_emoji import FONTS, STYLES, render_text_emoji, render_text_emoji_animated
+from bot.text_emoji import EFFECTS, FONTS, STYLES, render_text_emoji, render_text_emoji_animated
 
 HAS_FFMPEG = True
 try:
@@ -87,6 +87,27 @@ def test_animated_banner_splits_into_small_tiles(tmp_path):
 
         assert os.path.getsize(p) > 0
         assert os.path.getsize(p) <= 256 * 1024
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg가 없어서 애니메이션 인코딩 테스트를 건너뜀")
+def test_all_effects_render_without_error(tmp_path):
+    import cv2
+
+    for effect_key in EFFECTS:
+        out_path = str(tmp_path / f"anim_{effect_key}.webm")
+        render_text_emoji_animated("펭구 화이팅", "black_han_sans", "gold", out_path, effect_key)
+
+        cap = cv2.VideoCapture(out_path)
+        assert cap.isOpened(), effect_key
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        assert frame_count > 1, effect_key
+
+
+def test_unknown_effect_raises(tmp_path):
+    out_path = str(tmp_path / "anim.webm")
+    with pytest.raises(ValueError):
+        render_text_emoji_animated("테스트", "jua", "silver", out_path, "no_such_effect")
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg가 없어서 분할 테스트를 건너뜀")

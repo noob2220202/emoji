@@ -7,14 +7,16 @@
 이모지 팩으로 쪼개진다.
 """
 
+import math
 import os
+import random
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Dict, List, Tuple
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from . import config
 from .ffmpeg_util import ffmpeg_path
@@ -93,6 +95,17 @@ MAX_PHRASE_LEN = 30
 
 ANIM_FPS = 15
 ANIM_FRAMES = 45  # 15fps * 3s = 정확히 3초 루프
+
+# 움직이는 버전에서 고를 수 있는 이펙트. 전부 ANIM_FRAMES 프레임 안에서 이음매 없이
+# 루프되도록 설계되어 있다(마지막 프레임 다음에 첫 프레임이 이어져도 튀지 않음).
+EFFECTS: Dict[str, str] = {
+    "wave": "🌊 기본 (그라데이션 흐름)",
+    "swing3d": "🌀 3D 스윙",
+    "particles": "✨ 파티클 팡팡",
+    "neon": "💡 네온 플리커",
+    "glitch": "⚡ 글리치",
+}
+DEFAULT_EFFECT = "wave"
 
 
 def _font_path(font_key: str) -> str:
@@ -197,31 +210,206 @@ def render_text_emoji(phrase: str, font_key: str, style_key: str) -> bytes:
     return buf.getvalue()
 
 
-def render_text_emoji_animated(phrase: str, font_key: str, style_key: str, out_path: str) -> None:
-    """문구 + 폰트 + 색상 프리셋으로, 배경 그라데이션이 좌우로 흐르는 짧은(3초) 애니메이션
-    배너를 만들어 out_path에 WEBM(VP9, 알파 없음)으로 저장한다."""
+def _render_wave_frames(canvas_w, canvas_h, outline, mask, fill_layer, style) -> List[Image.Image]:
+    """기본 이펙트: 글자는 고정한 채 뒤쪽 배경 그라데이션만 좌우로 흐르듯 움직인다."""
+    # 색을 이어붙여(마지막에 시작 색을 다시 붙임) 이음매 없이 반복되는 폭 2*canvas_w짜리
+    # 그라데이션 띠를 만든 뒤, 프레임마다 다른 위치에서 canvas_w 폭만큼 잘라내면
+    # 좌우로 흐르는 애니메이션이 된다.
+    loop_colors = tuple(style.wave_colors) + (style.wave_colors[0],)
+    strip = _make_gradient((canvas_w * 2, canvas_h), loop_colors, horizontal=True)
+    frames = []
+    for i in range(ANIM_FRAMES):
+        offset = int(canvas_w * i / ANIM_FRAMES)
+        bg_frame = strip.crop((offset, 0, offset + canvas_w, canvas_h))
+        frames.append(_compose(bg_frame, outline, mask, fill_layer))
+    return frames
+
+
+def _render_swing3d_frames(canvas_w, canvas_h, outline, mask, fill_layer, style) -> List[Image.Image]:
+    """글자가 좌우로 기울며 흔들리듯 회전하는 가짜 3D 효과 + 금속 반사광이 스치는 연출."""
+    w, h = canvas_w, canvas_h
+    bg = _make_gradient((w, h), style.bg_colors, horizontal=False).convert("RGBA")
+    frames = []
+    for i in range(ANIM_FRAMES):
+        t = i / ANIM_FRAMES
+        angle_deg = 45 * math.sin(2 * 2 * math.pi * t)  # 루프 한 번에 스윙 2회
+        scale_x = max(0.35, math.cos(math.radians(angle_deg)))
+        shear = 0.25 * math.sin(math.radians(angle_deg))
+
+        text_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        text_layer = Image.alpha_composite(text_layer, outline)
+        text_layer.paste(fill_layer, (0, 0), mask)
+
+        new_w = max(1, round(w * scale_x))
+        scaled = text_layer.resize((new_w, h), Image.BILINEAR)
+        sheared = scaled.transform((new_w, h), Image.AFFINE, (1, shear, 0, 0, 1, 0), resample=Image.BILINEAR)
+
+        frame = bg.copy()
+        frame.alpha_composite(sheared, ((w - new_w) // 2, 0))
+
+        # 스윙 각도에 따라 좌우로 움직이는 밝은 대각선 반사광 (글자 마스크 안에서만 보이게)
+        shine = Image.new("L", (w, h), 0)
+        band_x = int((angle_deg + 45) / 90 * (w + 200)) - 100
+        ImageDraw.Draw(shine).polygon(
+            [(band_x, -20), (band_x + 60, -20), (band_x - 40, h + 20), (band_x - 100, h + 20)], fill=200
+        )
+        shine = shine.filter(ImageFilter.GaussianBlur(18))
+        shine_masked = ImageChops.multiply(shine, mask)
+        shine_rgba = Image.merge("RGBA", (Image.new("L", (w, h), 255),) * 3 + (shine_masked,))
+        frame = Image.alpha_composite(frame, shine_rgba)
+        frames.append(frame)
+    return frames
+
+
+def _render_particles_frames(canvas_w, canvas_h, outline, mask, fill_layer, style) -> List[Image.Image]:
+    """글자 테두리에서 반짝이는 조각들이 계속 터져나갔다 사라지길 반복하는 효과."""
+    w, h = canvas_w, canvas_h
+    bg = _make_gradient((w, h), style.bg_colors, horizontal=False).convert("RGBA")
+    base = _compose(bg, outline, mask, fill_layer)
+
+    # 마스크 테두리 근처의 점들을 파티클 시작 위치 후보로 뽑는다.
+    small_w, small_h = max(1, w // 4), max(1, h // 4)
+    mask_small = mask.resize((small_w, small_h))
+    px = mask_small.load()
+    edge_points = []
+    for y in range(1, small_h - 1):
+        for x in range(1, small_w - 1):
+            if px[x, y] > 128 and (
+                px[x - 1, y] < 80 or px[x + 1, y] < 80 or px[x, y - 1] < 80 or px[x, y + 1] < 80
+            ):
+                edge_points.append((x * 4, y * 4))
+    random.shuffle(edge_points)
+    particles = edge_points[:26]
+
+    p_angle = [random.uniform(0, 2 * math.pi) for _ in particles]
+    p_speed = [random.uniform(28, 70) for _ in particles]
+    p_phase = [random.uniform(0, 1) for _ in particles]
+    p_size = [random.uniform(3, 7) for _ in particles]
+    sparkle_colors = [
+        Image.new("RGB", (1, 1), c).getpixel((0, 0)) for c in ("#fff7cf", "#ffe07a", "#ffffff")
+    ]
+
+    frames = []
+    for i in range(ANIM_FRAMES):
+        frame = base.copy()
+        draw = ImageDraw.Draw(frame, "RGBA")
+        for (ox, oy), ang, spd, ph, sz in zip(particles, p_angle, p_speed, p_phase, p_size):
+            t = ((i / ANIM_FRAMES) + ph) % 1.0
+            r = t * spd
+            alpha = int(255 * (1 - t) ** 1.5)
+            if alpha <= 5:
+                continue
+            x = ox + math.cos(ang) * r
+            y = oy + math.sin(ang) * r
+            color = sparkle_colors[int(t * 3) % 3]
+            s = sz * (1 - 0.5 * t)
+            draw.ellipse([x - s, y - s, x + s, y + s], fill=color + (alpha,))
+        frames.append(frame)
+    return frames
+
+
+def _render_neon_frames(canvas_w, canvas_h, outline, mask, fill_layer, style) -> List[Image.Image]:
+    """네온사인처럼 은은하게 발광하다가 불규칙하게 밝기가 훅 떨어지는(깜빡이는) 효과."""
+    w, h = canvas_w, canvas_h
+    bg = _make_gradient((w, h), style.bg_colors, horizontal=False).convert("RGBA")
+
+    glow_rgb = Image.new("RGB", (1, 1), style.text_colors[0]).getpixel((0, 0))
+    glow_layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    glow_layer.paste(Image.new("RGBA", (w, h), glow_rgb + (255,)), (0, 0), mask)
+    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(14))
+
+    base_text = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    base_text = Image.alpha_composite(base_text, outline)
+    base_text.paste(fill_layer, (0, 0), mask)
+
+    # 미리 정해둔 깜빡임 패턴(프레임별 밝기 0~1) - 대부분 밝다가 가끔 훅 어두워짐.
+    flicker = []
+    level = 1.0
+    for _ in range(ANIM_FRAMES):
+        if random.random() < 0.12:
+            level = random.uniform(0.25, 0.6)
+        else:
+            level = min(1.0, level + random.uniform(0.15, 0.4))
+        flicker.append(level)
+    flicker[-1] = flicker[0]  # 루프 이음매에서 밝기가 뚝 끊기지 않도록 맞춘다
+
+    frames = []
+    for level in flicker:
+        frame = bg.copy()
+        r, g, b, a = glow_layer.split()
+        a = a.point(lambda v, lv=level: int(v * lv))
+        glow_alpha = Image.merge("RGBA", (r, g, b, a))
+        frame = Image.alpha_composite(frame, glow_alpha)
+        frame = Image.alpha_composite(frame, glow_alpha)  # 두 번 겹쳐 발광을 더 두껍게
+        r2, g2, b2, a2 = base_text.split()
+        a2 = a2.point(lambda v, lv=level: int(v * (0.55 + 0.45 * lv)))
+        text_dim = Image.merge("RGBA", (r2, g2, b2, a2))
+        frame = Image.alpha_composite(frame, text_dim)
+        frames.append(frame)
+    return frames
+
+
+def _render_glitch_frames(canvas_w, canvas_h, outline, mask, fill_layer, style) -> List[Image.Image]:
+    """RGB 채널 분리 + 순간적인 스캔라인 밀림이 간헐적으로 터지는 디지털 글리치 효과."""
+    w, h = canvas_w, canvas_h
+    bg = _make_gradient((w, h), style.bg_colors, horizontal=False)
+    base = _compose(bg, outline, mask, fill_layer).convert("RGB")
+
+    glitch_count = max(3, ANIM_FRAMES // 6)
+    glitch_frames = set(random.sample(range(ANIM_FRAMES), k=min(glitch_count, ANIM_FRAMES)))
+
+    frames = []
+    for i in range(ANIM_FRAMES):
+        frame = base.copy()
+        if i in glitch_frames:
+            dx = random.choice([-10, -6, 6, 10])
+            r, g, b = frame.split()
+            r = ImageChops.offset(r, dx, 0)
+            b = ImageChops.offset(b, -dx, 0)
+            frame = Image.merge("RGB", (r, g, b))
+            for _ in range(random.randint(2, 4)):
+                band_h = random.randint(4, 10)
+                band_y = random.randint(0, max(0, h - band_h))
+                shift = random.randint(-24, 24)
+                band = frame.crop((0, band_y, w, band_y + band_h))
+                shifted = Image.new("RGB", (w, band_h), (0, 0, 0))
+                shifted.paste(band, (shift, 0))
+                frame.paste(shifted, (0, band_y))
+        frames.append(frame.convert("RGBA"))
+    return frames
+
+
+_EFFECT_RENDERERS = {
+    "wave": _render_wave_frames,
+    "swing3d": _render_swing3d_frames,
+    "particles": _render_particles_frames,
+    "neon": _render_neon_frames,
+    "glitch": _render_glitch_frames,
+}
+
+
+def render_text_emoji_animated(
+    phrase: str, font_key: str, style_key: str, out_path: str, effect_key: str = DEFAULT_EFFECT
+) -> None:
+    """문구 + 폰트 + 색상 프리셋 + 이펙트로 짧은(3초) 애니메이션 배너를 만들어
+    out_path에 WEBM(VP9, 알파 없음)으로 저장한다."""
     phrase = phrase.strip()[:MAX_PHRASE_LEN]
     if not phrase:
         raise ValueError("문구가 비어 있습니다")
     style = STYLES.get(style_key)
     if style is None:
         raise ValueError(f"알 수 없는 스타일: {style_key}")
+    renderer = _EFFECT_RENDERERS.get(effect_key)
+    if renderer is None:
+        raise ValueError(f"알 수 없는 이펙트: {effect_key}")
 
     canvas_w, canvas_h, outline, mask, fill_layer = _prepare_text_layers(phrase, font_key, style)
-
-    # 색을 이어붙여(마지막에 시작 색을 다시 붙임) 이음매 없이 반복되는 폭 2*canvas_w짜리
-    # 그라데이션 띠를 만든 뒤, 프레임마다 다른 위치에서 canvas_w 폭만큼 잘라내면
-    # 좌우로 흐르는 애니메이션이 된다.
-    loop_colors = tuple(style.wave_colors) + (style.wave_colors[0],)
-    strip = _make_gradient((canvas_w * 2, canvas_h), loop_colors, horizontal=True)
+    frames = renderer(canvas_w, canvas_h, outline, mask, fill_layer, style)
 
     frames_dir = tempfile.mkdtemp(prefix="text_emoji_frames_")
     try:
-        for i in range(ANIM_FRAMES):
-            offset = int(canvas_w * i / ANIM_FRAMES)
-            bg_frame = strip.crop((offset, 0, offset + canvas_w, canvas_h))
-            frame = _compose(bg_frame, outline, mask, fill_layer).convert("RGB")
-            frame.save(os.path.join(frames_dir, f"f{i:03d}.png"))
+        for i, frame in enumerate(frames):
+            frame.convert("RGB").save(os.path.join(frames_dir, f"f{i:03d}.png"))
 
         cmd = [
             ffmpeg_path(),

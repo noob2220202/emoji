@@ -61,6 +61,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handlers.on_font_choice, pattern=r"^txtfont:"))
     app.add_handler(CallbackQueryHandler(handlers.on_style_choice, pattern=r"^txtstyle:"))
     app.add_handler(CallbackQueryHandler(handlers.on_anim_choice, pattern=r"^txtanim:"))
+    app.add_handler(CallbackQueryHandler(handlers.on_effect_choice, pattern=r"^txteffect:"))
     app.add_handler(CallbackQueryHandler(handlers.on_queue_skip, pattern=r"^queueskip:"))
     app.add_handler(CallbackQueryHandler(handlers.on_cancel, pattern=r"^cancel:"))
     app.add_handler(PreCheckoutQueryHandler(handlers.on_pre_checkout_query))
